@@ -382,7 +382,8 @@ class Story(Object, Update):
             raw.types.PrivacyValueAllowAll: enums.StoriesPrivacyRules.PUBLIC,
             raw.types.PrivacyValueAllowContacts: enums.StoriesPrivacyRules.CONTACTS,
             raw.types.PrivacyValueAllowCloseFriends: enums.StoriesPrivacyRules.CLOSE_FRIENDS,
-            raw.types.PrivacyValueDisallowAll: enums.StoriesPrivacyRules.SELECTED_USERS,
+            raw.types.PrivacyValueAllowUsers: enums.StoriesPrivacyRules.SELECTED_USERS,
+            raw.types.PrivacyValueAllowChatParticipants: enums.StoriesPrivacyRules.SELECTED_USERS,
         }
 
         for priv in story.privacy:
