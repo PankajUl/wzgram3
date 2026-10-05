@@ -5143,6 +5143,35 @@ async def test_a_link_preview_url_is_sent_and_edited_as_a_web_page():
     assert isinstance(client.sent[0], raw.functions.messages.SendMessage)
 
 
+async def test_edit_story_media_without_media_does_not_crash():
+    from pyrogram.methods.stories.edit_story_media import EditStoryMedia
+
+    class _StoryClient(EditStoryMedia):
+        parse_mode = enums.ParseMode.MARKDOWN
+
+        def __init__(self):
+            self.sent = []
+            self.parser = Parser(self)
+
+        async def resolve_peer(self, peer_id):
+            return raw.types.InputPeerSelf()
+
+        async def save_file(self, path, *args, **kwargs):
+            return raw.types.InputFile(id=1, parts=1, name="x", md5_checksum="") if path else None
+
+        async def invoke(self, query, *args, **kwargs):
+            self.sent.append(query)
+            return raw.types.Updates(updates=[], users=[], chats=[], date=0, seq=0)
+
+    client = _StoryClient()
+
+    result = await client.edit_story_media("me", 5, media=None)
+
+    assert result is None
+    assert isinstance(client.sent[0], raw.functions.stories.EditStory)
+    assert client.sent[0].media is None
+
+
 async def test_a_venue_with_a_foursquare_id_names_its_provider():
     client = _Client()
 
