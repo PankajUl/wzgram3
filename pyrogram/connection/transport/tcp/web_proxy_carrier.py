@@ -337,8 +337,16 @@ class _HttpConnection:
         raise WebCarrierError(msg) from last_error
 
     def _drop_connection(self) -> None:
+        writer = self._writer
+
         self._writer = None
         self._reader = None
+
+        if writer is not None:
+            try:
+                writer.close()
+            except OSError as e:
+                log.debug("WEB proxy: dropping the HTTP connection failed: %s", e)
 
     async def _send_and_read(
         self,
