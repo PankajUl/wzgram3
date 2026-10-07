@@ -221,6 +221,9 @@ class HTML:
             start = entity.offset
             end = start + entity.length
 
+            start = utils.clamp_to_code_point(text, start, start=True)
+            end = utils.clamp_to_code_point(text, end, start=False)
+
             if entity_type in (
                 MessageEntityType.BOLD,
                 MessageEntityType.ITALIC,

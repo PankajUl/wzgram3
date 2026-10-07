@@ -222,6 +222,9 @@ class Markdown:
             start = entity.offset
             end = start + entity.length
 
+            start = utils.clamp_to_code_point(text, start, start=True)
+            end = utils.clamp_to_code_point(text, end, start=False)
+
             if entity_type == MessageEntityType.BOLD:
                 start_tag = end_tag = BOLD_DELIM
             elif entity_type == MessageEntityType.ITALIC:

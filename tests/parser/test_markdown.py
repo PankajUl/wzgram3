@@ -304,3 +304,71 @@ class TestMarkdownUnparse:
         result = Markdown.unparse("Hello test", [EntityBold(), EntityItalic()])
         assert BOLD_DELIM in result
         assert ITALIC_DELIM in result
+
+
+def test_unparse_half_emoji_entity_widens_to_the_whole_code_point():
+    # An entity covering only the first UTF-16 unit of an emoji must not split
+    # the surrogate pair: it widens outward and stays crash-free.
+    class Entity:
+        type = MessageEntityType.BOLD
+        offset = 0
+        length = 1
+
+    result = Markdown.unparse("😀", [Entity()])
+    assert result == "**😀**"
+
+
+def test_unparse_entity_starting_inside_an_emoji():
+    class Entity:
+        type = MessageEntityType.BOLD
+        offset = 1
+        length = 1
+
+    result = Markdown.unparse("😀", [Entity()])
+    assert result == "**😀**"
+
+
+def test_unparse_entity_ending_inside_an_emoji():
+    # Emoji occupies UTF-16 units 1..2 in "a😀b"; a bold ending at unit 2 splits
+    # the pair and must widen right.
+    class Entity:
+        type = MessageEntityType.BOLD
+        offset = 1
+        length = 1
+
+    result = Markdown.unparse("a😀b", [Entity()])
+    assert result == "a**😀**b"
+
+
+def test_unparse_aligned_emoji_entity_is_unchanged():
+    class Entity:
+        type = MessageEntityType.BOLD
+        offset = 1
+        length = 2
+
+    result = Markdown.unparse("a😀b", [Entity()])
+    assert result == "a**😀**b"
+
+
+def test_unparse_normal_entity_after_emoji_is_unchanged():
+    # "😀 hello": the emoji is UTF-16 units 0..1, then " hello".  A normal,
+    # aligned entity must be byte-identical to the pre-fix output.
+    class Entity:
+        type = MessageEntityType.BOLD
+        offset = 3
+        length = 5
+
+    result = Markdown.unparse("😀 hello", [Entity()])
+    assert result == "😀 **hello**"
+
+
+def test_unparse_entity_with_leading_space_is_unchanged():
+    # The exact case requested: entity(offset=2, length=5) on "😀 hello".  The
+    # fix must only touch misaligned surrogate boundaries, never valid ones.
+    class Entity:
+        type = MessageEntityType.BOLD
+        offset = 2
+        length = 5
+
+    result = Markdown.unparse("😀 hello", [Entity()])
+    assert result == "😀** hell**o"

@@ -37,5 +37,33 @@ def remove_surrogates(text):
     return text.encode("utf-16", "surrogatepass").decode("utf-16")
 
 
+def _is_high_surrogate(char: str) -> bool:
+    return 0xD800 <= ord(char) <= 0xDBFF
+
+
+def _is_low_surrogate(char: str) -> bool:
+    return 0xDC00 <= ord(char) <= 0xDFFF
+
+
+def clamp_to_code_point(text: str, offset: int, *, start: bool) -> int:
+    """Widen *offset* so it never splits a surrogate pair.
+
+    :func:`add_surrogates` turns every code point outside the Basic Multilingual
+    Plane into a high surrogate followed by a low surrogate.  An entity offset
+    that lands between those two would tear an emoji in half when a tag is
+    inserted there, and :func:`remove_surrogates` would then raise a
+    ``UnicodeDecodeError``.  Match the behaviour of the ``Str`` type, which
+    widens outward to the whole code point: a start offset moves left, an end
+    offset moves right.
+    """
+    while 0 < offset < len(text):
+        if _is_high_surrogate(text[offset - 1]) and _is_low_surrogate(text[offset]):
+            offset += -1 if start else 1
+        else:
+            break
+
+    return offset
+
+
 def replace_once(source: str, old: str, new: str, start: int):
     return source[:start] + source[start:].replace(old, new, 1)
