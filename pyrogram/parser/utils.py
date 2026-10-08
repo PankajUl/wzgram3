@@ -65,5 +65,39 @@ def clamp_to_code_point(text: str, offset: int, *, start: bool) -> int:
     return offset
 
 
+def split_crossing_spans(text: str, entities: list):
+    def sort_key(span):
+        return span[0], -span[1]
+
+    spans = [
+        (
+            clamp_to_code_point(text, e.offset, start=True),
+            clamp_to_code_point(text, e.offset + e.length, start=False),
+            e,
+        )
+        for e in entities
+    ]
+
+    spans.sort(key=sort_key)
+
+    crossing = True
+
+    while crossing:
+        crossing = False
+
+        for a_start, a_end, _ in spans:
+            for k, (b_start, b_end, b_entity) in enumerate(spans):
+                if a_start < b_start < a_end < b_end:
+                    spans[k:k + 1] = [(b_start, a_end, b_entity), (a_end, b_end, b_entity)]
+                    spans.sort(key=sort_key)
+                    crossing = True
+                    break
+
+            if crossing:
+                break
+
+    return spans
+
+
 def replace_once(source: str, old: str, new: str, start: int):
     return source[:start] + source[start:].replace(old, new, 1)

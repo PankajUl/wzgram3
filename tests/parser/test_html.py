@@ -347,3 +347,13 @@ def test_html_unparse_entity_with_leading_space_is_unchanged():
     ])
 
     assert HTML.unparse(text=text, entities=entities) == "😀<b> hell</b>o"
+
+
+def test_html_unparse_partially_overlapping_entities_stay_well_formed():
+    text = "hello world"
+    entities = pyrogram.types.List([
+        _entity(pyrogram.enums.MessageEntityType.BOLD, 0, 7),
+        _entity(pyrogram.enums.MessageEntityType.ITALIC, 5, 6),
+    ])
+
+    assert HTML.unparse(text=text, entities=entities) == "<b>hello<i> w</i></b><i>orld</i>"

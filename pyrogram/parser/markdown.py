@@ -294,37 +294,9 @@ class Markdown:
 
             return internal_i - span_i
 
-        def sort_key(span):
-            return span[0], -span[1]
-
         text = utils.add_surrogates(text)
 
-        spans = [
-            (
-                utils.clamp_to_code_point(text, e.offset, start=True),
-                utils.clamp_to_code_point(text, e.offset + e.length, start=False),
-                e,
-            )
-            for e in entities
-        ]
-
-        spans.sort(key=sort_key)
-
-        crossing = True
-
-        while crossing:
-            crossing = False
-
-            for a_start, a_end, _ in spans:
-                for k, (b_start, b_end, b_entity) in enumerate(spans):
-                    if a_start < b_start < a_end < b_end:
-                        spans[k:k + 1] = [(b_start, a_end, b_entity), (a_end, b_end, b_entity)]
-                        spans.sort(key=sort_key)
-                        crossing = True
-                        break
-
-                if crossing:
-                    break
+        spans = utils.split_crossing_spans(text, entities)
 
         entities_offsets = []
 
