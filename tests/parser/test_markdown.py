@@ -307,8 +307,6 @@ class TestMarkdownUnparse:
 
 
 def test_unparse_half_emoji_entity_widens_to_the_whole_code_point():
-    # An entity covering only the first UTF-16 unit of an emoji must not split
-    # the surrogate pair: it widens outward and stays crash-free.
     class Entity:
         type = MessageEntityType.BOLD
         offset = 0
@@ -329,8 +327,6 @@ def test_unparse_entity_starting_inside_an_emoji():
 
 
 def test_unparse_entity_ending_inside_an_emoji():
-    # Emoji occupies UTF-16 units 1..2 in "a😀b"; a bold ending at unit 2 splits
-    # the pair and must widen right.
     class Entity:
         type = MessageEntityType.BOLD
         offset = 1
@@ -351,8 +347,6 @@ def test_unparse_aligned_emoji_entity_is_unchanged():
 
 
 def test_unparse_normal_entity_after_emoji_is_unchanged():
-    # "😀 hello": the emoji is UTF-16 units 0..1, then " hello".  A normal,
-    # aligned entity must be byte-identical to the pre-fix output.
     class Entity:
         type = MessageEntityType.BOLD
         offset = 3
@@ -363,8 +357,6 @@ def test_unparse_normal_entity_after_emoji_is_unchanged():
 
 
 def test_unparse_entity_with_leading_space_is_unchanged():
-    # The exact case requested: entity(offset=2, length=5) on "😀 hello".  The
-    # fix must only touch misaligned surrogate boundaries, never valid ones.
     class Entity:
         type = MessageEntityType.BOLD
         offset = 2
@@ -375,8 +367,6 @@ def test_unparse_entity_with_leading_space_is_unchanged():
 
 
 def test_unparse_overlapping_entities_stay_well_formed():
-    # Two adjacent entities that both widen onto the same emoji must not produce
-    # crossing tags: the output has to stay nested.
     class Bold:
         type = MessageEntityType.BOLD
         offset = 1
@@ -407,7 +397,6 @@ def test_unparse_overlapping_entities_at_start_stay_well_formed():
 
 
 def test_unparse_fully_overlapping_entities_nest():
-    # Two entities covering exactly the same span nest instead of crossing.
     class Bold:
         type = MessageEntityType.BOLD
         offset = 0
@@ -420,3 +409,33 @@ def test_unparse_fully_overlapping_entities_nest():
 
     result = Markdown.unparse("hello", [Bold(), Italic()])
     assert result == "**__hello__**"
+
+
+def test_unparse_partially_overlapping_entities_stay_well_formed():
+    class Bold:
+        type = MessageEntityType.BOLD
+        offset = 0
+        length = 7
+
+    class Italic:
+        type = MessageEntityType.ITALIC
+        offset = 5
+        length = 6
+
+    result = Markdown.unparse("hello world", [Bold(), Italic()])
+    assert result == "**hello__ w__**__orld__"
+
+
+def test_unparse_partially_overlapping_entities_reversed_input_order():
+    class Bold:
+        type = MessageEntityType.BOLD
+        offset = 0
+        length = 7
+
+    class Italic:
+        type = MessageEntityType.ITALIC
+        offset = 5
+        length = 6
+
+    result = Markdown.unparse("hello world", [Italic(), Bold()])
+    assert result == "**hello__ w__**__orld__"

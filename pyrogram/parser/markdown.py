@@ -213,17 +213,8 @@ class Markdown:
 
     @staticmethod
     def unparse(text: str, entities: list):
-        def parse_one(entity):
-            """
-            Parses a single entity and returns its start/end tags, plus any
-            blockquote line markers.
-            """
+        def parse_one(entity, start, end):
             entity_type = entity.type
-            start = entity.offset
-            end = start + entity.length
-
-            start = utils.clamp_to_code_point(text, start, start=True)
-            end = utils.clamp_to_code_point(text, end, start=False)
 
             if entity_type == MessageEntityType.BOLD:
                 start_tag = end_tag = BOLD_DELIM
@@ -282,13 +273,9 @@ class Markdown:
 
             return (start_tag, start), (end_tag, end), []
 
-        def recursive(entity_i: int) -> int:
-            """
-            Emits the tags for ``entities[entity_i]`` and every entity nested
-            inside it, depth-first, so overlapping entities produce well-formed
-            (nested) markdown rather than crossing tags.
-            """
-            this = parse_one(entities[entity_i])
+        def recursive(span_i: int) -> int:
+            start, end, entity = spans[span_i]
+            this = parse_one(entity, start, end)
 
             if this is None:
                 return 1
@@ -298,28 +285,54 @@ class Markdown:
             entities_offsets.append((start_tag, start))
             entities_offsets.extend(extra)
 
-            internal_i = entity_i + 1
+            internal_i = span_i + 1
 
-            while internal_i < len(entities) and entities[internal_i].offset < end:
+            while internal_i < len(spans) and spans[internal_i][0] < end:
                 internal_i += recursive(internal_i)
 
             entities_offsets.append((end_tag, end))
 
-            return internal_i - entity_i
+            return internal_i - span_i
+
+        def sort_key(span):
+            return span[0], -span[1]
 
         text = utils.add_surrogates(text)
 
-        entities_offsets = []
+        spans = [
+            (
+                utils.clamp_to_code_point(text, e.offset, start=True),
+                utils.clamp_to_code_point(text, e.offset + e.length, start=False),
+                e,
+            )
+            for e in entities
+        ]
 
-        entities = sorted(entities, key=lambda e: (e.offset, -e.length))
+        spans.sort(key=sort_key)
+
+        crossing = True
+
+        while crossing:
+            crossing = False
+
+            for a_start, a_end, _ in spans:
+                for k, (b_start, b_end, b_entity) in enumerate(spans):
+                    if a_start < b_start < a_end < b_end:
+                        spans[k:k + 1] = [(b_start, a_end, b_entity), (a_end, b_end, b_entity)]
+                        spans.sort(key=sort_key)
+                        crossing = True
+                        break
+
+                if crossing:
+                    break
+
+        entities_offsets = []
 
         i = 0
 
-        while i < len(entities):
+        while i < len(spans):
             i += recursive(i)
 
-        # Blockquote line markers can interleave with nested entities, so order
-        # every tag by its offset (stable) before inserting.
         entities_offsets.sort(key=lambda x: x[1])
 
         last_offset = len(text)
@@ -327,7 +340,5 @@ class Markdown:
         for entity, offset in reversed(entities_offsets):
             text = text[:offset] + entity + text[offset:last_offset] + text[last_offset:]
             last_offset = offset
-
-        text = text[:last_offset] + text[last_offset:]
 
         return utils.remove_surrogates(text)
