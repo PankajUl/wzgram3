@@ -6210,6 +6210,50 @@ async def test_a_received_rich_message_can_be_copied(partial):
     assert sent[0].users == [raw.types.InputUser(user_id=111, access_hash=9)]
 
 
+def _mention(uid):
+    return raw.types.TextMentionName(text=raw.types.TextPlain(text="you"), user_id=uid)
+
+
+def test_a_mention_inside_a_list_item_is_collected():
+    from pyrogram.types.input_content.input_rich_block import (
+        InputRichBlockList,
+        InputRichBlockListItem,
+        _collect_mentioned_user_ids,
+    )
+
+    blocks = [InputRichBlockList(items=[InputRichBlockListItem(text=_mention(111))])]
+
+    assert _collect_mentioned_user_ids(blocks) == [111]
+
+
+def test_a_mention_inside_a_table_cell_is_collected():
+    from pyrogram.types.input_content.input_rich_block import (
+        InputRichBlockTable,
+        InputRichBlockTableCell,
+        _collect_mentioned_user_ids,
+    )
+
+    blocks = [InputRichBlockTable(title="t", rows=[[InputRichBlockTableCell(text=_mention(222))]])]
+
+    assert _collect_mentioned_user_ids(blocks) == [222]
+
+
+def test_mentions_are_deduplicated_across_blocks():
+    from pyrogram.types.input_content.input_rich_block import (
+        InputRichBlockList,
+        InputRichBlockListItem,
+        InputRichBlockParagraph,
+        _collect_mentioned_user_ids,
+    )
+
+    blocks = [
+        InputRichBlockParagraph(text=_mention(333)),
+        InputRichBlockList(items=[InputRichBlockListItem(text=_mention(333))]),
+    ]
+
+    assert _collect_mentioned_user_ids(blocks) == [333]
+
+
 class _TooLongClient:
     handle_updates = pyrogram.Client.handle_updates
     _save_update_state = pyrogram.Client._save_update_state
