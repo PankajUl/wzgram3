@@ -213,11 +213,11 @@ class Markdown:
 
     @staticmethod
     def unparse(text: str, entities: list):
-        text = utils.add_surrogates(text)
-
-        entities_offsets = []
-
-        for entity in entities:
+        def parse_one(entity):
+            """
+            Parses a single entity and returns its start/end tags, plus any
+            blockquote line markers.
+            """
             entity_type = entity.type
             start = entity.offset
             end = start + entity.length
@@ -244,13 +244,17 @@ class Markdown:
                 start_tag = EXPANDABLE_QUOTE_DELIM if expandable else QUOTE_DELIM
                 end_tag = SPOILER_DELIM if expandable else ""
 
+                extra = []
+
                 for index in range(start, end - 1):
                     if text[index] == "\n":
-                        entities_offsets.append((QUOTE_DELIM, index + 1))
+                        extra.append((QUOTE_DELIM, index + 1))
 
                 if expandable:
                     line_end = text.find("\n", end)
                     end = len(text) if line_end < 0 else line_end
+
+                return (start_tag, start), (end_tag, end), extra
             elif entity_type == MessageEntityType.DATE_TIME:
                 unix_time = getattr(entity, "unix_time", 0) or 0
                 dt_format = getattr(entity, "date_time_format", "") or ""
@@ -274,21 +278,56 @@ class Markdown:
                 start_tag = "["
                 end_tag = f"](tg://user?id={user.id})"
             else:
-                continue
+                return None
 
-            entities_offsets.append((start_tag, start,))
-            entities_offsets.append((end_tag, end,))
+            return (start_tag, start), (end_tag, end), []
 
-        entities_offsets = map(
-            lambda x: x[1],
-            sorted(
-                enumerate(entities_offsets),
-                key=lambda x: (x[1][1], x[0]),
-                reverse=True
-            )
-        )
+        def recursive(entity_i: int) -> int:
+            """
+            Emits the tags for ``entities[entity_i]`` and every entity nested
+            inside it, depth-first, so overlapping entities produce well-formed
+            (nested) markdown rather than crossing tags.
+            """
+            this = parse_one(entities[entity_i])
 
-        for entity, offset in entities_offsets:
-            text = text[:offset] + entity + text[offset:]
+            if this is None:
+                return 1
+
+            (start_tag, start), (end_tag, end), extra = this
+
+            entities_offsets.append((start_tag, start))
+            entities_offsets.extend(extra)
+
+            internal_i = entity_i + 1
+
+            while internal_i < len(entities) and entities[internal_i].offset < end:
+                internal_i += recursive(internal_i)
+
+            entities_offsets.append((end_tag, end))
+
+            return internal_i - entity_i
+
+        text = utils.add_surrogates(text)
+
+        entities_offsets = []
+
+        entities = sorted(entities, key=lambda e: (e.offset, -e.length))
+
+        i = 0
+
+        while i < len(entities):
+            i += recursive(i)
+
+        # Blockquote line markers can interleave with nested entities, so order
+        # every tag by its offset (stable) before inserting.
+        entities_offsets.sort(key=lambda x: x[1])
+
+        last_offset = len(text)
+
+        for entity, offset in reversed(entities_offsets):
+            text = text[:offset] + entity + text[offset:last_offset] + text[last_offset:]
+            last_offset = offset
+
+        text = text[:last_offset] + text[last_offset:]
 
         return utils.remove_surrogates(text)

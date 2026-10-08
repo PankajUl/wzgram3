@@ -372,3 +372,51 @@ def test_unparse_entity_with_leading_space_is_unchanged():
 
     result = Markdown.unparse("😀 hello", [Entity()])
     assert result == "😀** hell**o"
+
+
+def test_unparse_overlapping_entities_stay_well_formed():
+    # Two adjacent entities that both widen onto the same emoji must not produce
+    # crossing tags: the output has to stay nested.
+    class Bold:
+        type = MessageEntityType.BOLD
+        offset = 1
+        length = 1
+
+    class Italic:
+        type = MessageEntityType.ITALIC
+        offset = 2
+        length = 1
+
+    result = Markdown.unparse("a😀b", [Bold(), Italic()])
+    assert result == "a**__😀__**b"
+
+
+def test_unparse_overlapping_entities_at_start_stay_well_formed():
+    class Italic:
+        type = MessageEntityType.ITALIC
+        offset = 0
+        length = 1
+
+    class Bold:
+        type = MessageEntityType.BOLD
+        offset = 1
+        length = 1
+
+    result = Markdown.unparse("😀x", [Italic(), Bold()])
+    assert result == "__**😀**__x"
+
+
+def test_unparse_fully_overlapping_entities_nest():
+    # Two entities covering exactly the same span nest instead of crossing.
+    class Bold:
+        type = MessageEntityType.BOLD
+        offset = 0
+        length = 5
+
+    class Italic:
+        type = MessageEntityType.ITALIC
+        offset = 0
+        length = 5
+
+    result = Markdown.unparse("hello", [Bold(), Italic()])
+    assert result == "**__hello__**"
