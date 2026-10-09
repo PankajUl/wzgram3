@@ -107,7 +107,7 @@ exclude = [
 
 [tool.hatch.build.targets.wheel]
 ignore-vcs = true
-packages = ["pyrogram", "wzgram"]
+packages = ["pyrogram"]
 
 [tool.poe.tasks]
 test = "pytest --no-header -q"
