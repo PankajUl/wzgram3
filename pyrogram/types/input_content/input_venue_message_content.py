@@ -87,9 +87,13 @@ class InputVenueMessageContent(InputMessageContent):
             ),
             title=self.title,
             address=self.address,
-            provider="",
-            venue_id=self.foursquare_id,
-            venue_type=self.foursquare_type,
+            provider=(
+                "foursquare" if self.foursquare_id or self.foursquare_type
+                else "google" if self.google_place_id or self.google_place_type
+                else ""
+            ),
+            venue_id=self.foursquare_id or self.google_place_id or "",
+            venue_type=self.foursquare_type or self.google_place_type or "",
             reply_markup=await reply_markup.write(client) if reply_markup else None
         )
 

@@ -24,6 +24,7 @@ import pyrogram
 class OnRawUpdate:
     def on_raw_update(
         self=None,
+        filters=None,
         group: int = 0
     ) -> Callable:
         """Decorator for handling raw updates.
@@ -35,21 +36,27 @@ class OnRawUpdate:
         :obj:`~pyrogram.handlers.RawUpdateHandler`.
 
         Parameters:
+            filters (:obj:`~pyrogram.filters`, *optional*):
+                Pass one or more filters to allow only a subset of updates to be passed
+                in your function.
+
             group (``int``, *optional*):
                 The group identifier, defaults to 0.
         """
 
         def decorator(func: Callable) -> Callable:
             if isinstance(self, pyrogram.Client):
-                self.add_handler(pyrogram.handlers.RawUpdateHandler(func), group)
+                self.add_handler(pyrogram.handlers.RawUpdateHandler(func, filters), group)
             else:
                 if not hasattr(func, "handlers"):
                     func.handlers = []
 
+                handler_filters, handler_group = pyrogram.utils.unbound_handler_args(self, filters, group)
+
                 func.handlers.append(
                     (
-                        pyrogram.handlers.RawUpdateHandler(func),
-                        group
+                        pyrogram.handlers.RawUpdateHandler(func, handler_filters),
+                        handler_group
                     )
                 )
 

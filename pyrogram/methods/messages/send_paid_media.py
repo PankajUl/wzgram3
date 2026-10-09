@@ -428,7 +428,7 @@ class SendPaidMedia:
                                     file=await self.save_file(i.media, progress=progress, progress_args=progress_args),
                                     thumb=await self.save_file(i.thumb, progress=progress, progress_args=progress_args),
                                     spoiler=i.has_spoiler,
-                                    mime_type=self.guess_mime_type(getattr(i.media, "name", "video.mp4")) or "video/mp4",
+                                    mime_type=self.guess_mime_type(utils.get_file_name(i.media, file_name=i.file_name or "", fallback="video.mp4")) or "video/mp4",
                                     nosound_video=i.no_sound,
                                 video_cover=vcover_file,
                                 video_timestamp=i.video_start_timestamp,
@@ -439,7 +439,7 @@ class SendPaidMedia:
                                         w=i.width,
                                         h=i.height
                                     ),
-                                    raw.types.DocumentAttributeFilename(file_name=getattr(i.media, "name", "video.mp4"))
+                                    raw.types.DocumentAttributeFilename(file_name=utils.get_file_name(i.media, file_name=i.file_name or "", fallback="video.mp4"))
                                 ]
                             ),
                         )

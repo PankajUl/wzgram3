@@ -8,7 +8,10 @@ with entities on top, a rich message has structure: headings, lists, tables, pul
 code blocks, collapsible sections, collages, maps and captions — the vocabulary of an
 Instant View article, composed and sent from your own code.
 
-Rich messages are sent by **bots**.
+Rich messages are sent by **bots**, and by **users with Premium** — a user account
+without it gets ``[400 RICH_MESSAGE_UNSUPPORTED]``. Streaming a draft with
+:meth:`~pyrogram.Client.send_rich_message_draft` stays a bot-only method
+(``[400 USER_BOT_REQUIRED]``).
 
 
 -----
@@ -99,8 +102,10 @@ Block                                          What it is
 Attaching media
 ---------------
 
-Media in a rich message must **already exist on Telegram**. You pass a file identifier, an
-``InputPhoto`` or an ``InputDocument`` — never a local path. Nothing here uploads.
+A rich message refers to media that lives on Telegram. You can hand it one that is already
+there — a file identifier, an ``InputPhoto`` or an ``InputDocument`` — or an
+:obj:`~pyrogram.types.InputMedia` object holding a local path or an HTTP URL, which is
+uploaded for you when the message is sent.
 
 How you attach it depends on which of the three forms you used, and
 :obj:`~pyrogram.types.InputRichMessageMedia` covers both shapes:
@@ -110,21 +115,35 @@ refers to it with a ``tg://`` link:
 
 .. code-block:: python
 
-    from wzgram.types import InputRichMessage, InputRichMessageMedia
+    from wzgram.types import InputMediaPhoto, InputRichMessage, InputRichMessageMedia
 
     await app.send_rich_message(
         chat_id="me",
         rich_text=InputRichMessage(
             html='<p>Here it is:</p><img src="tg://photo?id=cover">',
-            media=[InputRichMessageMedia(id="cover", media=photo_file_id)],
+            media=[InputRichMessageMedia(id="cover", media=InputMediaPhoto("cover.jpg"))],
         ),
     )
 
-The scheme says what kind of media it is: ``tg://photo?id=``, ``tg://video?id=`` or
-``tg://audio?id=``.
+A file identifier works in the same place: ``InputRichMessageMedia(id="cover",
+media=photo_file_id)``. The scheme says what kind of media it is: ``tg://photo?id=``,
+``tg://video?id=`` or ``tg://audio?id=``.
 
-**blocks** — the media travels as bare vectors that the blocks point into, so the entry
-carries ``photos``, ``documents`` or ``users`` rather than a single ``media``:
+**blocks** — a media block takes the file directly, and the vectors the wire format needs
+are built while the message is sent:
+
+.. code-block:: python
+
+    InputRichMessage(
+        blocks=[InputRichBlockPhoto(photo=InputMediaPhoto("cover.jpg"), caption="The cover")],
+    )
+
+The parameter is named after the block: ``photo`` for
+:obj:`~pyrogram.types.InputRichBlockPhoto`, ``video``, ``animation``, ``audio``, ``voice``
+and ``document`` for the others. Each takes a file identifier or an ``InputMedia`` object.
+
+If you have already uploaded the file and hold its raw type, pass the identifier instead
+and carry the vectors yourself:
 
 .. code-block:: python
 
@@ -136,6 +155,9 @@ carries ``photos``, ``documents`` or ``users`` rather than a single ``media``:
 A block's ``photo_id`` / ``video_id`` / ``audio_id`` must equal the ``id`` attribute of the
 corresponding ``InputPhoto`` or ``InputDocument`` in those vectors. MTProto carries no
 string identifiers on this side, which is why the two shapes differ at all.
+
+Users mentioned by a block travel in a vector of their own; they are collected from the
+blocks and resolved for you.
 
 Buttons
 -------
@@ -232,14 +254,32 @@ A rich message too large to travel inline is delivered with only its first block
         for block in message.rich_message.blocks:
             print(block)
 
+The fetch is a **user** method: a bot calling it gets ``[400 BOT_METHOD_INVALID]``, so a bot
+that sends a long rich message cannot read the rest of its own back.
+
 Rich text elsewhere
 -------------------
 
-``rich_text`` is not confined to :meth:`~pyrogram.Client.send_rich_message`.
-:meth:`~pyrogram.Client.send_message`, :meth:`~pyrogram.Client.edit_message_text` and
-:meth:`~pyrogram.Client.send_ephemeral_message` take a ``rich_text`` of their own, with
-``rich_text_media`` for its media and ``rich_text_parse_mode`` (Markdown by default) for
-when you pass a plain string rather than an :obj:`~pyrogram.types.InputRichMessage`:
+``rich_text`` is not confined to :meth:`~pyrogram.Client.send_rich_message`. Every method
+that can carry rich content takes the same three arguments: ``rich_text``, which is a
+Markdown or HTML string or a whole :obj:`~pyrogram.types.InputRichMessage`,
+``rich_text_parse_mode`` (Markdown by default) for when it is a string, and
+``rich_text_media`` for the media it refers to. That is
+:meth:`~pyrogram.Client.send_message`, :meth:`~pyrogram.Client.edit_message_text`,
+:meth:`~pyrogram.Client.edit_message_caption`, :meth:`~pyrogram.Client.edit_inline_text`,
+:meth:`~pyrogram.Client.send_ephemeral_message`,
+:meth:`~pyrogram.Client.edit_ephemeral_message_text`,
+:meth:`~pyrogram.Client.send_rich_message_draft`, and the bound
+:meth:`~pyrogram.types.Message.edit_text`,
+:meth:`~pyrogram.types.Message.edit_ephemeral_text` and
+:meth:`~pyrogram.types.CallbackQuery.edit_message_text`. The rich-first methods —
+:meth:`~pyrogram.Client.send_rich_message`, :meth:`~pyrogram.types.Message.reply_rich`
+and :meth:`~pyrogram.types.Message.answer_rich` — spell the last two ``parse_mode`` and
+``media``, since they have no text of their own to disambiguate from.
+
+``rich_message`` still works on the two methods that used to take it, with a deprecation
+warning; ``message.rich_message`` remains the name of the rich content on a *received*
+message.
 
 .. code-block:: python
 
@@ -256,8 +296,8 @@ When ``rich_text`` is set, ``text`` is ignored.
 Gotchas
 -------
 
-- A local file path in ``media`` is refused, not uploaded. Send the file somewhere first —
-  a saved-messages chat is the usual trick — and use the identifier it comes back with.
+- A bare local path is still refused: a string is read as a file identifier. Wrap the path
+  in an ``InputMedia`` object — ``InputMediaPhoto("cover.jpg")`` — to have it uploaded.
 - With ``html`` and ``markdown``, the ``id`` in the media entry and the ``id=`` in the
   ``tg://`` link must match exactly. A typo means the media is dropped rather than an error.
 - With ``blocks``, a block's ``photo_id`` is the *file's own* id, not a position in the

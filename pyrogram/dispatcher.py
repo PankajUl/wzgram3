@@ -489,7 +489,8 @@ class Dispatcher:
                     self.groups[group] = []
                     self.groups = OrderedDict(sorted(self.groups.items()))
 
-                self.groups[group].append(handler)
+                if handler not in self.groups[group]:
+                    self.groups[group].append(handler)
 
         try:
             loop = asyncio.get_running_loop()
@@ -497,7 +498,8 @@ class Dispatcher:
             if group not in self.groups:
                 self.groups[group] = []
                 self.groups = OrderedDict(sorted(self.groups.items()))
-            self.groups[group].append(handler)
+            if handler not in self.groups[group]:
+                self.groups[group].append(handler)
         else:
             utils.run_in_background(fn(), loop)
 

@@ -142,14 +142,20 @@ class Invoice(Object):
 
     @staticmethod
     def _parse(client, invoice: Union["raw.types.MessageMediaInvoice", "raw.types.Invoice"]) -> "Invoice":
+        prices = getattr(invoice, "prices", None)
+        total_amount = getattr(invoice, "total_amount", None)
+
+        if total_amount is None and prices:
+            total_amount = sum(price.amount for price in prices)
+
         return Invoice(
             currency=invoice.currency,
             is_test=invoice.test,
             title=getattr(invoice, "title", None),
             description=getattr(invoice, "description", None),
-            total_amount=getattr(invoice, "total_amount", None),
+            total_amount=total_amount,
             start_parameter=getattr(invoice, "start_param", None) or None,
-            prices=types.List(types.LabeledPrice._parse(lp) for lp in invoice.prices) if getattr(invoice, "prices", None) else None,
+            prices=types.List(types.LabeledPrice._parse(lp) for lp in prices) if prices else None,
             is_name_requested=getattr(invoice, "name_requested", None),
             is_phone_requested=getattr(invoice, "phone_requested", None),
             is_email_requested=getattr(invoice, "email_requested", None),

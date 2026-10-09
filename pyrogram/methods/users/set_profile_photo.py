@@ -27,7 +27,8 @@ class SetProfilePhoto:
         self: "pyrogram.Client",
         *,
         photo: Optional[Union[str, BinaryIO]] = None,
-        video: Optional[Union[str, BinaryIO]] = None
+        video: Optional[Union[str, BinaryIO]] = None,
+        is_public: Optional[bool] = None
     ) -> bool:
         """Set a new profile photo or video (H.264/MPEG-4 AVC video, max 5 seconds).
 
@@ -52,6 +53,9 @@ class SetProfilePhoto:
                 Pass a file path as string to upload a new video that exists on your local machine or
                 pass a binary file-like object with its attribute ".name" set for in-memory uploads.
 
+            is_public (``bool``, *optional*):
+                Pass True to set the photo shown to the users you hid your real photo from.
+
         Returns:
             ``bool``: True on success.
 
@@ -74,6 +78,75 @@ class SetProfilePhoto:
         return bool(
             await self.invoke(
                 raw.functions.photos.UploadProfilePhoto(
+                    file=await self.save_file(photo),
+                    video=await self.save_file(video),
+                    fallback=is_public
+                )
+            )
+        )
+
+
+class SetBotProfilePhoto:
+    async def set_bot_profile_photo(
+        self: "pyrogram.Client",
+        bot_user_id: Union[int, str],
+        *,
+        photo: Optional[Union[str, BinaryIO]] = None,
+        video: Optional[Union[str, BinaryIO]] = None
+    ) -> bool:
+        """Set or remove the profile photo or video of a bot you own.
+
+        The ``photo`` and ``video`` arguments are mutually exclusive.
+        Pass neither to remove the current profile photo.
+
+        .. include:: /_includes/usable-by/users.rst
+
+        Parameters:
+            bot_user_id (``int`` | ``str``):
+                Unique identifier (int) or username (str) of the target bot.
+
+            photo (``str`` | ``BinaryIO``, *optional*):
+                Profile photo to set.
+                Pass a file path as string to upload a new photo that exists on your local machine or
+                pass a binary file-like object with its attribute ".name" set for in-memory uploads.
+
+            video (``str`` | ``BinaryIO``, *optional*):
+                Profile video to set.
+                Pass a file path as string to upload a new video that exists on your local machine or
+                pass a binary file-like object with its attribute ".name" set for in-memory uploads.
+
+        Returns:
+            ``bool``: True on success.
+
+        Example:
+            .. code-block:: python
+
+                # Set a new bot profile photo
+                await app.set_bot_profile_photo("mybot", photo="new_photo.jpg")
+
+                # Set a new bot profile video
+                await app.set_bot_profile_photo("mybot", video="new_video.mp4")
+
+                # Remove the bot profile photo
+                await app.set_bot_profile_photo("mybot")
+        """
+
+        bot = await self.resolve_peer(bot_user_id)
+
+        if photo is None and video is None:
+            return bool(
+                await self.invoke(
+                    raw.functions.photos.UpdateProfilePhoto(
+                        id=raw.types.InputPhotoEmpty(),
+                        bot=bot
+                    )
+                )
+            )
+
+        return bool(
+            await self.invoke(
+                raw.functions.photos.UploadProfilePhoto(
+                    bot=bot,
                     file=await self.save_file(photo),
                     video=await self.save_file(video)
                 )

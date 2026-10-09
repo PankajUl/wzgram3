@@ -33,6 +33,7 @@ from .password import Password
 from .payments import Payments
 from .phone import Phone
 from .premium import Premium
+from .stickers import Stickers
 from .users import Users
 from .stories import Stories
 from .utilities import Utilities
@@ -50,6 +51,7 @@ class Methods(
     Payments,
     Phone,
     Premium,
+    Stickers,
     Chats,
     Listeners,
     Users,

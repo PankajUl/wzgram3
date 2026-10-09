@@ -87,16 +87,20 @@ class Parser(HTMLParser):
                 extra["url"] = url
         elif tag in ["emoji", "tg-emoji"]:
             custom_emoji_id = attrs.get("emoji-id") or attrs.get("id")
-            if custom_emoji_id is None:
+
+            try:
+                extra["document_id"] = int(custom_emoji_id)
+            except (TypeError, ValueError):
                 return
+
             entity = raw.types.MessageEntityCustomEmoji
-            extra["document_id"] = int(custom_emoji_id)
         elif tag == "tg-time":
-            unix = attrs.get("unix")
-            if unix is None:
+            try:
+                extra["date"] = int(attrs.get("unix"))
+            except (TypeError, ValueError):
                 return
+
             entity = raw.types.MessageEntityFormattedDate
-            extra["date"] = int(unix)
             date_time_format = attrs.get("format", "")
             extra = self._parse_date_time_format(extra, date_time_format)
         else:
@@ -163,9 +167,7 @@ class HTML:
         self.client = client
 
     async def parse(self, text: str):
-        # Strip whitespaces from the beginning and the end, but preserve closing tags
-        text = re.sub(r"^\s*(<[\w<>=\s\"]*>)\s*", r"\1", text)
-        text = re.sub(r"\s*(</[\w</>]*>)\s*$", r"\1", text)
+        text = text.strip()
 
         parser = Parser(self.client)
         parser.feed(utils.add_surrogates(text))
@@ -191,23 +193,31 @@ class HTML:
 
             entities.append(entity)
 
-        # Remove zero-length entities
-        entities = list(filter(lambda x: x.length > 0, entities))
+        message = parser.text.rstrip()
+        limit = len(message)
+        kept = []
+
+        for entity in entities:
+            if entity.offset >= limit:
+                continue
+
+            entity.length = min(entity.length, limit - entity.offset)
+
+            if entity.length > 0:
+                kept.append(entity)
 
         return {
-            "message": utils.remove_surrogates(parser.text),
-            "entities": sorted(entities, key=lambda e: e.offset) or None
+            "message": utils.remove_surrogates(message),
+            "entities": sorted(kept, key=lambda e: e.offset) or None
         }
 
     @staticmethod
     def unparse(text: str, entities: list):
-        def parse_one(entity):
+        def parse_one(entity, start, end):
             """
             Parses a single entity and returns (start_tag, start), (end_tag, end)
             """
             entity_type = entity.type
-            start = entity.offset
-            end = start + entity.length
 
             if entity_type in (
                 MessageEntityType.BOLD,
@@ -259,35 +269,27 @@ class HTML:
 
             return (start_tag, start), (end_tag, end)
 
-        def recursive(entity_i: int) -> int:
-            """
-            Takes the index of the entity to start parsing from, returns the number of parsed entities inside it.
-            Uses entities_offsets as a stack, pushing (start_tag, start) first, then parsing nested entities,
-            and finally pushing (end_tag, end) to the stack.
-            No need to sort at the end.
-            """
-            this = parse_one(entities[entity_i])
+        def recursive(span_i: int) -> int:
+            start, end, entity = spans[span_i]
+            this = parse_one(entity, start, end)
             if this is None:
                 return 1
             (start_tag, start), (end_tag, end) = this
             entities_offsets.append((start_tag, start))
-            internal_i = entity_i + 1
-            # while the next entity is inside the current one, keep parsing
-            while internal_i < len(entities) and entities[internal_i].offset < end:
+            internal_i = span_i + 1
+            while internal_i < len(spans) and spans[internal_i][0] < end:
                 internal_i += recursive(internal_i)
             entities_offsets.append((end_tag, end))
-            return internal_i - entity_i
+            return internal_i - span_i
 
         text = utils.add_surrogates(text)
 
+        spans = utils.split_crossing_spans(text, entities)
+
         entities_offsets = []
 
-        # probably useless because entities are already sorted by telegram
-        entities.sort(key=lambda e: (e.offset, -e.length))
-
-        # main loop for first-level entities
         i = 0
-        while i < len(entities):
+        while i < len(spans):
             i += recursive(i)
 
         last_offset = len(text)

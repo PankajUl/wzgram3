@@ -22,10 +22,38 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Type
 
 from pyrogram.crypto.executor import get_crypto_executor
-from .transport import TCP, TCPAbridged
+from .proxy import Proxy, uses_random_padding
+from .transport import TCP, TCPAbridged, TCPPaddedIntermediate
 from ..session.internals import DataCenter, get_dc_address
 
 log = logging.getLogger(__name__)
+
+# tdesktop's `kTestModeDcIdShift`.
+#  https://github.com/telegramdesktop/tdesktop/blob/23dff657fc857c3223fa20472aa8614b9ab2c7eb/Telegram/SourceFiles/mtproto/connection_abstract.h#L29
+TEST_MODE_DC_ID_SHIFT = 10000
+
+
+def transport_class_for(proxy: Optional[Proxy], default: Type[TCP] = TCPAbridged) -> Type[TCP]:
+    """The transport a proxy's secret requires, or ``default`` when it requires none."""
+    # A dd- or ee-prefixed secret asks for random padding, so the secret decides
+    #  the framing and the caller does not: TDLib builds the same choice into its
+    #  obfuscated transport's constructor.
+    #  https://github.com/tdlib/td/blob/d1085f9cebc5a62379991ae1652673954f229c1f/td/mtproto/TcpTransport.h#L102-L103
+    if uses_random_padding(proxy):
+        return TCPPaddedIntermediate
+
+    return default
+
+
+def protocol_dc_id(dc_id: int, test_mode: bool, media: bool) -> int:
+    # Mirrors tdesktop's `SessionPrivate::getProtocolDcId()`: the media cluster
+    #  is the negated dc id, test-mode servers get the shift above. Only the
+    #  obfuscated2 header carries this, and the other transports address the DC
+    #  by IP and never see it.
+    #  https://github.com/telegramdesktop/tdesktop/blob/23dff657fc857c3223fa20472aa8614b9ab2c7eb/Telegram/SourceFiles/mtproto/session_private.cpp#L253-L265
+    shifted = dc_id + (TEST_MODE_DC_ID_SHIFT if test_mode else 0)
+
+    return -shifted if media else shifted
 
 
 TRANSPORT_ERRORS = {
@@ -60,7 +88,7 @@ class Connection:
         dc_id: int,
         test_mode: bool,
         ipv6: bool,
-        proxy: dict,
+        proxy: Optional[Proxy] = None,
         media: bool = False,
         protocol_factory: Type[TCP] = TCPAbridged,
         crypto_executor: Optional[ThreadPoolExecutor] = None,
@@ -73,14 +101,23 @@ class Connection:
         self.ipv6 = ipv6
         self.proxy = proxy
         self.media = media
-        self.protocol_factory = protocol_factory
+        # The proxy secret overrides whatever framing the caller asked for, so a
+        #  proxy is the only thing a caller has to pass to reach one.
+        self.protocol_factory = transport_class_for(proxy, protocol_factory)
         self.crypto_executor = crypto_executor or get_crypto_executor()
+
+        if self.protocol_factory is not protocol_factory:
+            log.debug(
+                "Proxy secret asks for random padding, so %s frames this connection",
+                self.protocol_factory.__name__
+            )
 
         if server_address and port:
             self.address = (server_address, port)
         else:
             self.address = get_dc_address(dc_id, test_mode, ipv6, media)
         self.protocol: TCP = None
+        self.protocol_dc_id = protocol_dc_id(dc_id, test_mode, media)
 
         if isinstance(loop, asyncio.AbstractEventLoop):
             self.loop = loop
@@ -94,7 +131,9 @@ class Connection:
         last_error = None
 
         for i in range(Connection.MAX_CONNECTION_ATTEMPTS):
-            self.protocol = self.protocol_factory(self.ipv6, self.proxy, self.crypto_executor, self.loop)
+            self.protocol = self.protocol_factory(
+                self.ipv6, self.proxy, self.crypto_executor, self.loop, self.protocol_dc_id
+            )
 
             try:
                 log.info("Connecting...")
@@ -114,10 +153,20 @@ class Connection:
         else:
             log.warning("Connection failed! Trying again...")
             raise ConnectionError(
-                "Connection to DC{} at {}:{} failed: {}".format(
-                    self.dc_id, self.address[0], self.address[1], last_error
+                "Connection to DC{} at {}:{}{} failed: {}".format(
+                    self.dc_id, self.address[0], self.address[1], self._via_proxy(), last_error
                 )
             ) from last_error
+
+    def _via_proxy(self) -> str:
+        # An obfuscated2 proxy is dialed instead of the DC address, so naming only
+        #  the DC sends the reader after an address the failure never touched.
+        if self.proxy is None:
+            return ""
+
+        return " via {} proxy {}:{}".format(
+            self.proxy.scheme.value, self.proxy.hostname, self.proxy.port
+        )
 
     async def close(self):
         if self.protocol is None:

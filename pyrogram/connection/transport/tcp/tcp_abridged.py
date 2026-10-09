@@ -20,18 +20,26 @@ import asyncio
 import logging
 from typing import Optional
 
-from .tcp import TCP
+from .tcp import ABRIDGED_OBFUSCATE_TAG, TCP
 
 log = logging.getLogger(__name__)
 
 
 class TCPAbridged(TCP):
-    def __init__(self, ipv6: bool, proxy: dict, crypto_executor=None, loop: Optional[asyncio.AbstractEventLoop] = None):
-        super().__init__(ipv6, proxy, crypto_executor, loop)
+    # Lets TCP use this class over an obfuscated2 proxy scheme - classic MTProxy
+    #  or WEB - unmodified, for a plain 16-byte secret.
+    OBFUSCATE_TAG = ABRIDGED_OBFUSCATE_TAG
+
+    def __init__(self, ipv6: bool = False, proxy=None, crypto_executor=None, loop: Optional[asyncio.AbstractEventLoop] = None, dc_id: Optional[int] = None):
+        super().__init__(ipv6, proxy, crypto_executor, loop, dc_id)
 
     async def connect(self, address: tuple):
         await super().connect(address)
-        await super().send(b"\xef")
+
+        if not self.opens_with_obfuscated2_header:
+            # The header already carries this tag where one was sent; see
+            #  TCP.opens_with_obfuscated2_header.
+            await super().send(b"\xef")
 
     async def send(self, data: bytes, *args):
         length = len(data) // 4

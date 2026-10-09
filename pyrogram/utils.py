@@ -130,10 +130,8 @@ def get_input_media_from_file_id(
             live_photo=live_photo,
             video=get_input_media_from_file_id(
                 live_photo_video_file_id,
-                expected_file_type=FileType.VIDEO,
-                has_spoiler=has_spoiler,
-                live_photo=live_photo
-            ) if live_photo else None
+                expected_file_type=FileType.VIDEO
+            ).id if live_photo else None
         )
 
     if file_type in DOCUMENT_TYPES:
@@ -292,10 +290,20 @@ def parse_deleted_messages(client, update, users, chats) -> List["types.Message"
 
     chat = None
 
-    if channel_id:
+    if channel_id and channel_id in chats:
+        chat = types.Chat._parse_channel_chat(client, chats[channel_id])
+    elif channel_id:
+        storage = getattr(client.storage, "local", client.storage)
+        peer_cache = getattr(storage, "_peer_cache", None)
+        row = peer_cache.get(get_channel_id(channel_id)) if peer_cache is not None else None
+
         chat = types.Chat(
             id=get_channel_id(channel_id),
-            type=enums.ChatType.CHANNEL,
+            type={
+                "supergroup": enums.ChatType.SUPERGROUP,
+                "forum": enums.ChatType.FORUM,
+                "direct": enums.ChatType.PRIVATE
+            }.get(row and row[2], enums.ChatType.CHANNEL),
             client=client
         )
     if peer:
@@ -313,12 +321,22 @@ def parse_deleted_messages(client, update, users, chats) -> List["types.Message"
                 )
 
     parsed_messages = []
+    ephemeral = isinstance(update, raw.types.UpdateDeleteEphemeralMessages)
 
     for message in messages:
+        known = (
+            client.message_cache.pop((chat.id, "ephemeral", message))
+            if ephemeral and chat is not None
+            else None
+        )
+
         parsed_messages.append(
             types.Message(
                 id=message,
                 chat=chat,
+                ephemeral_message_id=message if ephemeral else None,
+                from_user=known.from_user if known else None,
+                receiver_user=known.receiver_user if known else None,
                 business_connection_id=getattr(update, "connection_id", None),
                 client=client
             )
@@ -474,9 +492,12 @@ async def get_reply_to(
     """Get InputReply for reply_to argument"""
     if reply_parameters:
         if reply_parameters.ephemeral_message_id:
-            return raw.types.InputReplyToEphemeralMessage(
-                id=reply_parameters.ephemeral_message_id
-            )
+            deadline = getattr(reply_parameters, "_ephemeral_quote_deadline", None)
+
+            if deadline is None or client.server_time < deadline:
+                return raw.types.InputReplyToEphemeralMessage(
+                    id=reply_parameters.ephemeral_message_id
+                )
 
         if reply_parameters.chat_id and reply_parameters.story_id:
             return raw.types.InputReplyToStory(
@@ -535,12 +556,15 @@ def get_file_name(
     if hasattr(media, "read"):
         name = getattr(media, "name", None)
 
-        return name if isinstance(name, str) and name else fallback
+        if not isinstance(name, str) or not name:
+            return fallback
 
-    if not isinstance(media, (str, pathlib.PurePath)):
+        return os.path.basename(name) or fallback
+
+    if not isinstance(media, (str, os.PathLike)):
         return fallback
 
-    return pathlib.Path(media).name or fallback
+    return pathlib.Path(os.fspath(media)).name or fallback
 
 
 def get_channel_id(peer_id: int) -> int:
@@ -633,6 +657,36 @@ def compute_password_check(
     )
 
     return raw.types.InputCheckPasswordSRP(srp_id=srp_id, A=A_bytes, M1=M1_bytes)
+
+
+async def build_input_rich_message(
+    client: "pyrogram.Client",
+    rich_text: Union[str, "types.InputRichMessage"],
+    parse_mode: Optional["enums.ParseMode"] = None,
+    media: Optional[List["types.InputRichMessageMedia"]] = None,
+    chat_id: Optional[Union[int, str]] = None
+) -> "raw.base.InputRichMessage":
+    if isinstance(rich_text, types.RichMessage):
+        return rich_text._write()
+
+    if isinstance(rich_text, types.InputRichMessage):
+        await rich_text._upload(client, chat_id)
+
+        return rich_text.write()
+
+    if media:
+        rich_message = types.InputRichMessage(html="_", media=media)
+
+        await rich_message._upload(client, chat_id)
+
+        files = rich_message.write_files()
+    else:
+        files = None
+
+    if parse_mode == enums.ParseMode.HTML:
+        return raw.types.InputRichMessageHTML(html=rich_text, files=files)
+
+    return raw.types.InputRichMessageMarkdown(markdown=rich_text, files=files)
 
 
 async def parse_text_entities(
@@ -873,3 +927,21 @@ def run_in_background(coro, loop: Optional[asyncio.AbstractEventLoop] = None) ->
     task.add_done_callback(_background_tasks.discard)
 
     return task
+
+
+async def write_edit_reply_markup(
+    client: "pyrogram.Client",
+    *,
+    reply_markup: Union["types.InlineKeyboardMarkup", type[object], None],
+) -> Optional["raw.base.ReplyMarkup"]:
+    if reply_markup is object or reply_markup is None:
+        return None
+
+    return await reply_markup.write(client)
+
+
+def unbound_handler_args(receiver, filters, group: int):
+    if isinstance(filters, int):
+        return receiver, filters
+
+    return (receiver if receiver is not None else filters), group

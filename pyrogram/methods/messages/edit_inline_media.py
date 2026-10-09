@@ -16,7 +16,7 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
 
-from typing import Optional
+from typing import Optional, Union
 import asyncio
 import io
 import os
@@ -38,7 +38,7 @@ class EditInlineMedia:
         self: "pyrogram.Client",
         inline_message_id: str,
         media: "types.InputMedia",
-        reply_markup: Optional["types.InlineKeyboardMarkup"] = None,
+        reply_markup: Union["types.InlineKeyboardMarkup", type[object], None] = object,
         business_connection_id: Optional[str] = None,
     ) -> bool:
         """Edit inline animation, audio, document, photo or video messages.
@@ -58,6 +58,7 @@ class EditInlineMedia:
 
             reply_markup (:obj:`~pyrogram.types.InlineKeyboardMarkup`, *optional*):
                 An InlineKeyboardMarkup object.
+                Pass None to remove the existing reply markup.
 
             business_connection_id (``str``, *optional*):
                 Unique identifier of the business connection.
@@ -83,6 +84,8 @@ class EditInlineMedia:
         """
         caption = media.caption
         parse_mode = media.parse_mode
+        has_spoiler = getattr(media, "has_spoiler", None)
+        is_photo = isinstance(media, types.InputMediaPhoto)
 
         is_bytes_io = isinstance(media.media, io.BytesIO)
         is_uploaded_file = is_bytes_io or os.path.isfile(media.media)
@@ -117,7 +120,7 @@ class EditInlineMedia:
                     spoiler=media.has_spoiler
                 )
             else:
-                media = utils.get_input_media_from_file_id(media.media, FileType.PHOTO)
+                media = utils.get_input_media_from_file_id(media.media, FileType.PHOTO, has_spoiler=has_spoiler)
         elif is_video:
             vcover_file = None
             vcover_media = None
@@ -191,6 +194,7 @@ class EditInlineMedia:
             else:
                 media = utils.get_input_media_from_file_id(
                     media.media, FileType.VIDEO,
+                    has_spoiler=has_spoiler,
                     video_cover=_vcover,
                     video_start_timestamp=_vtimestamp
                 )
@@ -238,7 +242,7 @@ class EditInlineMedia:
                     spoiler=media.has_spoiler
                 )
             else:
-                media = utils.get_input_media_from_file_id(media.media, FileType.ANIMATION)
+                media = utils.get_input_media_from_file_id(media.media, FileType.ANIMATION, has_spoiler=has_spoiler)
         elif isinstance(media, types.InputMediaDocument):
             if is_uploaded_file:
                 media = raw.types.InputMediaUploadedDocument(
@@ -272,14 +276,14 @@ class EditInlineMedia:
                     access_hash=uploaded_media.photo.access_hash,
                     file_reference=uploaded_media.photo.file_reference
                 ),
-                spoiler=getattr(media, "has_spoiler", None)
-            ) if isinstance(media, types.InputMediaPhoto) else raw.types.InputMediaDocument(
+                spoiler=has_spoiler
+            ) if is_photo else raw.types.InputMediaDocument(
                 id=raw.types.InputDocument(
                     id=uploaded_media.document.id,
                     access_hash=uploaded_media.document.access_hash,
                     file_reference=uploaded_media.document.file_reference
                 ),
-                spoiler=getattr(media, "has_spoiler", None),
+                spoiler=has_spoiler,
                 **(
                     {"video_cover": _vcover, "video_timestamp": _vtimestamp}
                     if is_video else {}
@@ -295,7 +299,7 @@ class EditInlineMedia:
                     raw.functions.messages.EditInlineBotMessage(
                         id=unpacked,
                         media=actual_media,
-                        reply_markup=await reply_markup.write(self) if reply_markup else None,
+                        reply_markup=await utils.write_edit_reply_markup(self, reply_markup=reply_markup),
                         **await self.parser.parse(caption, parse_mode)
                     ),
                     business_connection_id

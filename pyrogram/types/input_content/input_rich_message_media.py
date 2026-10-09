@@ -19,7 +19,10 @@
 import re
 from typing import List, Optional, Union
 
-from pyrogram import raw, utils
+import pyrogram
+from pyrogram import raw, types, utils
+
+from .input_rich_block import _upload_media
 
 from ..object import Object
 
@@ -47,11 +50,12 @@ class InputRichMessageMedia(Object):
             or ``tg://audio?id=`` link. 1-64 characters, only ``A-Z``, ``a-z``, ``0-9``,
             ``_`` and ``-`` are allowed.
 
-        media (``str`` | :obj:`~pyrogram.raw.base.InputPhoto` | :obj:`~pyrogram.raw.base.InputDocument`, *optional*):
+        media (``str`` | :obj:`~pyrogram.types.InputMedia` | :obj:`~pyrogram.raw.base.InputPhoto` | :obj:`~pyrogram.raw.base.InputDocument`, *optional*):
             The media the identifier refers to, as a file identifier of an already uploaded
-            file or as an input photo or document. A rich message can only refer to media
-            that already exists on Telegram, so a local path or an HTTP URL has to be
-            uploaded first.
+            file, as an :obj:`~pyrogram.types.InputMediaPhoto`, :obj:`~pyrogram.types.InputMediaVideo`,
+            :obj:`~pyrogram.types.InputMediaAnimation`, :obj:`~pyrogram.types.InputMediaAudio`,
+            :obj:`~pyrogram.types.InputMediaVoiceNote` or :obj:`~pyrogram.types.InputMediaDocument`
+            holding a local path or an HTTP URL, or as an input photo or document.
 
         photos (List of :obj:`~pyrogram.raw.base.InputPhoto`, *optional*):
             Photos referenced by blocks.
@@ -66,7 +70,7 @@ class InputRichMessageMedia(Object):
     def __init__(
         self,
         id: Optional[str] = None,
-        media: Optional[Union[str, "raw.base.InputPhoto", "raw.base.InputDocument"]] = None,
+        media: Optional[Union[str, "types.InputMedia", "raw.base.InputPhoto", "raw.base.InputDocument"]] = None,
         photos: Optional[List["raw.base.InputPhoto"]] = None,
         documents: Optional[List["raw.base.InputDocument"]] = None,
         users: Optional[List["raw.base.InputUser"]] = None,
@@ -75,6 +79,7 @@ class InputRichMessageMedia(Object):
 
         self.id = id
         self.media = media
+        self._file = None
         self.photos = photos
         self.documents = documents
         self.users = users
@@ -111,6 +116,9 @@ class InputRichMessageMedia(Object):
                 f'Invalid media id "{self.id}": 1-64 characters of A-Z, a-z, 0-9, _ and - only'
             )
 
+        if self._file is not None:
+            return self._file
+
         media = self.media
 
         if isinstance(media, str):
@@ -127,5 +135,27 @@ class InputRichMessageMedia(Object):
 
         raise ValueError(
             "A rich message can only refer to media that already exists on Telegram. "
-            f'Pass a file identifier, an InputPhoto or an InputDocument, not "{type(media).__name__}"'
+            f'Pass a file identifier, an InputMedia object, an InputPhoto or an '
+            f'InputDocument, not "{type(media).__name__}"'
+        )
+
+    async def _upload(
+        self,
+        client: "pyrogram.Client",
+        chat_id: Optional[Union[int, str]]
+    ):
+        if not isinstance(self.media, types.InputMedia):
+            return
+
+        media = await _upload_media(
+            client,
+            chat_id,
+            self.media,
+            is_photo=isinstance(self.media, types.InputMediaPhoto)
+        )
+
+        self._file = (
+            raw.types.InputRichFilePhoto(id=self.id, photo=media)
+            if isinstance(media, raw.types.InputPhoto)
+            else raw.types.InputRichFileDocument(id=self.id, document=media)
         )

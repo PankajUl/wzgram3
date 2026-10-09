@@ -15,6 +15,8 @@ from pyrogram.raw.types import (
     InputMessageEntityMentionName,
     MessageEntityBold,
     MessageEntityCode,
+    MessageEntityCustomEmoji,
+    MessageEntityFormattedDate,
     MessageEntityItalic,
     MessageEntityPre,
     MessageEntitySpoiler,
@@ -100,6 +102,42 @@ class TestMarkdownParse:
         result = await markdown.parse("plain text")
         assert result["message"] == "plain text"
         assert result["entities"] is None
+
+
+    async def test_custom_emoji(self, markdown):
+        result = await markdown.parse("![x](tg://emoji?id=5368324170671202286)")
+        assert result["message"] == "x"
+        assert len(result["entities"]) == 1
+        assert isinstance(result["entities"][0], MessageEntityCustomEmoji)
+        assert result["entities"][0].offset == 0
+        assert result["entities"][0].length == 1
+        assert result["entities"][0].document_id == 5368324170671202286
+
+    async def test_date_time(self, markdown):
+        result = await markdown.parse("![t](tg://time?unix=1700000000)")
+        assert result["message"] == "t"
+        assert len(result["entities"]) == 1
+        assert isinstance(result["entities"][0], MessageEntityFormattedDate)
+        assert result["entities"][0].date == 1700000000
+
+    async def test_date_time_with_format(self, markdown):
+        result = await markdown.parse("![t](tg://time?unix=1700000000&format=dT)")
+        assert result["message"] == "t"
+        assert result["entities"][0].short_date is True
+        assert result["entities"][0].long_time is True
+
+    async def test_bang_before_a_plain_link_is_kept(self, markdown):
+        result = await markdown.parse("![x](https://example.com)")
+        assert result["message"] == "!x"
+        assert len(result["entities"]) == 1
+        assert isinstance(result["entities"][0], MessageEntityTextUrl)
+        assert result["entities"][0].offset == 1
+        assert result["entities"][0].url == "https://example.com"
+
+    async def test_bang_with_a_bad_emoji_id_is_kept(self, markdown):
+        result = await markdown.parse("![x](tg://emoji?id=nope)")
+        assert result["message"] == "!x"
+        assert isinstance(result["entities"][0], MessageEntityTextUrl)
 
 
 class TestMarkdownUnparse:
@@ -203,13 +241,54 @@ class TestMarkdownUnparse:
 
     def test_unsupported_entity_skipped(self):
         class Entity:
+            type = MessageEntityType.MENTION
+            offset = 0
+            length = 5
+
+        result = Markdown.unparse("Hello", [Entity()])
+        assert result == "Hello"
+
+    def test_custom_emoji(self):
+        class Entity:
             type = MessageEntityType.CUSTOM_EMOJI
             offset = 0
             length = 5
             custom_emoji_id = 123
 
         result = Markdown.unparse("Hello", [Entity()])
-        assert result == "Hello"
+        assert result == "![Hello](tg://emoji?id=123)"
+
+    def test_date_time(self):
+        class Entity:
+            type = MessageEntityType.DATE_TIME
+            offset = 0
+            length = 5
+            unix_time = 1700000000
+            date_time_format = None
+
+        result = Markdown.unparse("Hello", [Entity()])
+        assert result == "![Hello](tg://time?unix=1700000000)"
+
+    def test_date_time_with_format(self):
+        class Entity:
+            type = MessageEntityType.DATE_TIME
+            offset = 0
+            length = 5
+            unix_time = 1700000000
+            date_time_format = "dT"
+
+        result = Markdown.unparse("Hello", [Entity()])
+        assert result == "![Hello](tg://time?unix=1700000000&format=dT)"
+
+    def test_expandable_blockquote_closes_on_its_own_line(self):
+        class Entity:
+            type = MessageEntityType.BLOCKQUOTE
+            offset = 0
+            length = 5
+            expandable = True
+
+        result = Markdown.unparse("Hello world", [Entity()])
+        assert result == "**>Hello world||"
 
     def test_multiple_entities(self):
         class EntityBold:
@@ -225,3 +304,138 @@ class TestMarkdownUnparse:
         result = Markdown.unparse("Hello test", [EntityBold(), EntityItalic()])
         assert BOLD_DELIM in result
         assert ITALIC_DELIM in result
+
+
+def test_unparse_half_emoji_entity_widens_to_the_whole_code_point():
+    class Entity:
+        type = MessageEntityType.BOLD
+        offset = 0
+        length = 1
+
+    result = Markdown.unparse("😀", [Entity()])
+    assert result == "**😀**"
+
+
+def test_unparse_entity_starting_inside_an_emoji():
+    class Entity:
+        type = MessageEntityType.BOLD
+        offset = 1
+        length = 1
+
+    result = Markdown.unparse("😀", [Entity()])
+    assert result == "**😀**"
+
+
+def test_unparse_entity_ending_inside_an_emoji():
+    class Entity:
+        type = MessageEntityType.BOLD
+        offset = 1
+        length = 1
+
+    result = Markdown.unparse("a😀b", [Entity()])
+    assert result == "a**😀**b"
+
+
+def test_unparse_aligned_emoji_entity_is_unchanged():
+    class Entity:
+        type = MessageEntityType.BOLD
+        offset = 1
+        length = 2
+
+    result = Markdown.unparse("a😀b", [Entity()])
+    assert result == "a**😀**b"
+
+
+def test_unparse_normal_entity_after_emoji_is_unchanged():
+    class Entity:
+        type = MessageEntityType.BOLD
+        offset = 3
+        length = 5
+
+    result = Markdown.unparse("😀 hello", [Entity()])
+    assert result == "😀 **hello**"
+
+
+def test_unparse_entity_with_leading_space_is_unchanged():
+    class Entity:
+        type = MessageEntityType.BOLD
+        offset = 2
+        length = 5
+
+    result = Markdown.unparse("😀 hello", [Entity()])
+    assert result == "😀** hell**o"
+
+
+def test_unparse_overlapping_entities_stay_well_formed():
+    class Bold:
+        type = MessageEntityType.BOLD
+        offset = 1
+        length = 1
+
+    class Italic:
+        type = MessageEntityType.ITALIC
+        offset = 2
+        length = 1
+
+    result = Markdown.unparse("a😀b", [Bold(), Italic()])
+    assert result == "a**__😀__**b"
+
+
+def test_unparse_overlapping_entities_at_start_stay_well_formed():
+    class Italic:
+        type = MessageEntityType.ITALIC
+        offset = 0
+        length = 1
+
+    class Bold:
+        type = MessageEntityType.BOLD
+        offset = 1
+        length = 1
+
+    result = Markdown.unparse("😀x", [Italic(), Bold()])
+    assert result == "__**😀**__x"
+
+
+def test_unparse_fully_overlapping_entities_nest():
+    class Bold:
+        type = MessageEntityType.BOLD
+        offset = 0
+        length = 5
+
+    class Italic:
+        type = MessageEntityType.ITALIC
+        offset = 0
+        length = 5
+
+    result = Markdown.unparse("hello", [Bold(), Italic()])
+    assert result == "**__hello__**"
+
+
+def test_unparse_partially_overlapping_entities_stay_well_formed():
+    class Bold:
+        type = MessageEntityType.BOLD
+        offset = 0
+        length = 7
+
+    class Italic:
+        type = MessageEntityType.ITALIC
+        offset = 5
+        length = 6
+
+    result = Markdown.unparse("hello world", [Bold(), Italic()])
+    assert result == "**hello__ w__**__orld__"
+
+
+def test_unparse_partially_overlapping_entities_reversed_input_order():
+    class Bold:
+        type = MessageEntityType.BOLD
+        offset = 0
+        length = 7
+
+    class Italic:
+        type = MessageEntityType.ITALIC
+        offset = 5
+        length = 6
+
+    result = Markdown.unparse("hello world", [Italic(), Bold()])
+    assert result == "**hello__ w__**__orld__"

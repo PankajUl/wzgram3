@@ -25,6 +25,25 @@ from pyrogram import raw, types, utils
 from ..object import Object
 
 
+def _plain_text(text) -> str:
+    if text is None:
+        return ""
+
+    if isinstance(text, str):
+        return text
+
+    if isinstance(text, list):
+        return "".join(_plain_text(t) for t in text)
+
+    if isinstance(text, RichTextCustomEmoji):
+        return text.alternative_text or ""
+
+    if isinstance(text, RichTextMathematicalExpression):
+        return text.expression or ""
+
+    return _plain_text(getattr(text, "text", None))
+
+
 class RichText(Object):
     """This object represents a rich formatted text.
 
@@ -160,7 +179,7 @@ class RichText(Object):
         if isinstance(rich_text, raw.types.TextAutoUrl):
             return RichTextUrl(
                 text=await RichText._parse(client, rich_text.text),
-                url=await RichText._parse(client, rich_text.text),
+                url=_plain_text(await RichText._parse(client, rich_text.text)),
             )
 
         if isinstance(rich_text, raw.types.TextEmail):
@@ -171,7 +190,7 @@ class RichText(Object):
         if isinstance(rich_text, raw.types.TextAutoEmail):
             return RichTextEmailAddress(
                 text=await RichText._parse(client, rich_text.text),
-                email_address=await RichText._parse(client, rich_text.text),
+                email_address=_plain_text(await RichText._parse(client, rich_text.text)),
             )
 
         if isinstance(rich_text, raw.types.TextPhone):
@@ -182,13 +201,13 @@ class RichText(Object):
         if isinstance(rich_text, raw.types.TextAutoPhone):
             return RichTextPhoneNumber(
                 text=await RichText._parse(client, rich_text.text),
-                phone_number=await RichText._parse(client, rich_text.text),
+                phone_number=_plain_text(await RichText._parse(client, rich_text.text)),
             )
 
         if isinstance(rich_text, raw.types.TextBankCard):
             return RichTextBankCardNumber(
                 text=await RichText._parse(client, rich_text.text),
-                bank_card_number=await RichText._parse(client, rich_text.text),
+                bank_card_number=_plain_text(await RichText._parse(client, rich_text.text)),
             )
 
         if isinstance(rich_text, raw.types.TextMention):
@@ -196,7 +215,7 @@ class RichText(Object):
 
             return RichTextMention(
                 text=content,
-                username=content.lstrip("@"),
+                username=_plain_text(content).lstrip("@"),
             )
 
         if isinstance(rich_text, raw.types.TextHashtag):
@@ -204,7 +223,7 @@ class RichText(Object):
 
             return RichTextHashtag(
                 text=content,
-                hashtag=content.lstrip("#"),
+                hashtag=_plain_text(content).lstrip("#"),
             )
 
         if isinstance(rich_text, raw.types.TextCashtag):
@@ -212,7 +231,7 @@ class RichText(Object):
 
             return RichTextCashtag(
                 text=content,
-                cashtag=content.lstrip("$"),
+                cashtag=_plain_text(content).lstrip("$"),
             )
 
         if isinstance(rich_text, raw.types.TextBotCommand):
@@ -220,7 +239,7 @@ class RichText(Object):
 
             return RichTextBotCommand(
                 text=content,
-                bot_command=content.lstrip("/"),
+                bot_command=_plain_text(content).lstrip("/"),
             )
 
         if isinstance(rich_text, raw.types.TextAnchor):

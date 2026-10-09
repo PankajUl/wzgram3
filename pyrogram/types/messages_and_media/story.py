@@ -378,25 +378,32 @@ class Story(Object, Update):
                 media_type = enums.MessageMediaType.UNSUPPORTED
                 media = None
 
-        privacy_map = {
-            raw.types.PrivacyValueAllowAll: enums.StoriesPrivacyRules.PUBLIC,
-            raw.types.PrivacyValueAllowContacts: enums.StoriesPrivacyRules.CONTACTS,
-            raw.types.PrivacyValueAllowCloseFriends: enums.StoriesPrivacyRules.CLOSE_FRIENDS,
-            raw.types.PrivacyValueDisallowAll: enums.StoriesPrivacyRules.SELECTED_USERS,
-        }
+        rules = {type(priv) for priv in story.privacy}
+
+        if story.public or raw.types.PrivacyValueAllowAll in rules:
+            privacy = enums.StoriesPrivacyRules.PUBLIC
+        elif story.close_friends or raw.types.PrivacyValueAllowCloseFriends in rules:
+            privacy = enums.StoriesPrivacyRules.CLOSE_FRIENDS
+        elif story.contacts or raw.types.PrivacyValueAllowContacts in rules:
+            privacy = enums.StoriesPrivacyRules.CONTACTS
+        elif story.selected_contacts or rules:
+            privacy = enums.StoriesPrivacyRules.SELECTED_USERS
+
+        allowed = []
+        disallowed = []
 
         for priv in story.privacy:
-            if type(priv) in privacy_map:
-                privacy = privacy_map[type(priv)]
-
             if isinstance(priv, raw.types.PrivacyValueAllowUsers):
-                allowed_users = types.List(types.User._parse(client, users.get(user_id, None)) for user_id in priv.users)
+                allowed += (types.User._parse(client, users.get(user_id, None)) for user_id in priv.users)
             elif isinstance(priv, raw.types.PrivacyValueAllowChatParticipants):
-                allowed_users = types.List(types.Chat._parse_chat_chat(client, chats.get(chat_id, None)) for chat_id in priv.chats)
+                allowed += (types.Chat._parse_chat_chat(client, chats.get(chat_id, None)) for chat_id in priv.chats if chat_id in chats)
             elif isinstance(priv, raw.types.PrivacyValueDisallowUsers):
-                disallowed_users = types.List(types.User._parse(client, users.get(user_id, None)) for user_id in priv.users)
+                disallowed += (types.User._parse(client, users.get(user_id, None)) for user_id in priv.users)
             elif isinstance(priv, raw.types.PrivacyValueDisallowChatParticipants):
-                disallowed_users = types.List(types.Chat._parse_chat_chat(client, chats.get(chat_id, None)) for chat_id in priv.chats)
+                disallowed += (types.Chat._parse_chat_chat(client, chats.get(chat_id, None)) for chat_id in priv.chats if chat_id in chats)
+
+        allowed_users = types.List(u for u in allowed if u) or None
+        disallowed_users = types.List(u for u in disallowed if u) or None
 
         entities = [e for e in (types.MessageEntity._parse(client, entity, {}) for entity in story.entities) if e]
 
@@ -1015,6 +1022,7 @@ class Story(Object, Update):
         has_spoiler: Optional[bool] = None,
         ttl_seconds: Optional[int] = None,
 
+        view_once: Optional[bool] = None,
         disable_notification: Optional[bool] = None,
         schedule_date: Optional[datetime] = None,
         repeat_period: Optional[int] = None,
@@ -1073,6 +1081,11 @@ class Story(Object, Update):
                 If you set a timer, the photo will self-destruct in *ttl_seconds*
                 seconds after it was viewed.
 
+
+            view_once (``bool``, *optional*):
+                Pass True if the photo must be opened once and disappear afterwards.
+                Self-destructing media only works in private chats; a group or a
+                channel drops the timer.
 
             disable_notification (``bool``, *optional*):
                 Sends the message silently.
@@ -1135,6 +1148,7 @@ class Story(Object, Update):
             ttl_seconds=ttl_seconds,
 
             disable_notification=disable_notification,
+            view_once=view_once,
             schedule_date=schedule_date,
             repeat_period=repeat_period,
             paid_message_star_count=paid_message_star_count,
@@ -1266,6 +1280,7 @@ class Story(Object, Update):
         thumb: Optional[Union[str, BinaryIO]] = None,
         file_name: Optional[str] = None,
         supports_streaming: bool = True,
+        view_once: Optional[bool] = None,
         disable_notification: Optional[bool] = None,
         schedule_date: Optional[datetime] = None,
         repeat_period: Optional[int] = None,
@@ -1358,6 +1373,11 @@ class Story(Object, Update):
             supports_streaming (``bool``, *optional*):
                 Pass True, if the uploaded video is suitable for streaming.
 
+            view_once (``bool``, *optional*):
+                Pass True if the video must be opened once and disappear afterwards.
+                Self-destructing media only works in private chats; a group or a
+                channel drops the timer.
+
             disable_notification (``bool``, *optional*):
                 Sends the message silently.
                 Users will receive a notification with no sound.
@@ -1431,6 +1451,7 @@ class Story(Object, Update):
             file_name=file_name,
             supports_streaming=supports_streaming,
             disable_notification=disable_notification,
+            view_once=view_once,
             schedule_date=schedule_date,
             repeat_period=repeat_period,
             no_sound=no_sound,
@@ -1446,6 +1467,7 @@ class Story(Object, Update):
         duration: int = 0,
         length: int = 1,
         thumb: Optional[Union[str, BinaryIO]] = None,
+        view_once: Optional[bool] = None,
         disable_notification: Optional[bool] = None,
         schedule_date: Optional[datetime] = None,
         repeat_period: Optional[int] = None,
@@ -1498,6 +1520,11 @@ class Story(Object, Update):
                 The thumbnail should be in JPEG format and less than 200 KB in size.
                 A thumbnail's width and height should not exceed 320 pixels.
                 Thumbnails can't be reused and can be only uploaded as a new file.
+
+            view_once (``bool``, *optional*):
+                Pass True if the video note must be opened once and disappear afterwards.
+                Self-destructing media only works in private chats; a group or a
+                channel drops the timer.
 
             disable_notification (``bool``, *optional*):
                 Sends the message silently.
@@ -1559,6 +1586,7 @@ class Story(Object, Update):
             length=length,
             thumb=thumb,
             disable_notification=disable_notification,
+            view_once=view_once,
             schedule_date=schedule_date,
             repeat_period=repeat_period,
 
@@ -1575,6 +1603,8 @@ class Story(Object, Update):
         parse_mode: Optional["enums.ParseMode"] = None,
         caption_entities: Optional[List["types.MessageEntity"]] = None,
         duration: int = 0,
+        waveform: Optional[bytes] = None,
+        view_once: Optional[bool] = None,
         disable_notification: Optional[bool] = None,
         schedule_date: Optional[datetime] = None,
         repeat_period: Optional[int] = None,
@@ -1628,6 +1658,14 @@ class Story(Object, Update):
 
             duration (``int``, *optional*):
                 Duration of the voice message in seconds.
+
+            waveform (``bytes``, *optional*):
+                The waveform of the voice note, as a 5-bit byte string.
+
+            view_once (``bool``, *optional*):
+                Pass True if the voice note must be opened once and disappear afterwards.
+                Self-destructing media only works in private chats; a group or a
+                channel drops the timer.
 
             disable_notification (``bool``, *optional*):
                 Sends the message silently.
@@ -1690,6 +1728,8 @@ class Story(Object, Update):
             caption_entities=caption_entities,
             duration=duration,
             disable_notification=disable_notification,
+            waveform=waveform,
+            view_once=view_once,
             schedule_date=schedule_date,
             repeat_period=repeat_period,
 

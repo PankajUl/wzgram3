@@ -96,6 +96,11 @@ class CallbackQuery(Object, Update):
         self.connection_id = connection_id
         self.reply_to_message = reply_to_message
 
+    @property
+    def chat(self) -> Optional["types.Chat"]:
+        """:obj:`~pyrogram.types.Chat`: Chat the callback button lives in, if the message is known."""
+        return self.message.chat if self.message else None
+
     @staticmethod
     async def _parse(client: "pyrogram.Client", callback_query, users, chats=None) -> "CallbackQuery":
         if chats is None:
@@ -194,10 +199,14 @@ class CallbackQuery(Object, Update):
 
     async def edit_message_text(
         self,
-        text: str,
+        text: Optional[str] = None,
         parse_mode: Optional["enums.ParseMode"] = None,
+        link_preview_options: Optional["types.LinkPreviewOptions"] = None,
         disable_web_page_preview: Optional[bool] = None,
-        reply_markup: Optional["types.InlineKeyboardMarkup"] = None
+        rich_text: Optional[Union[str, "types.InputRichMessage"]] = None,
+        rich_text_parse_mode: "enums.ParseMode" = enums.ParseMode.MARKDOWN,
+        rich_text_media: Optional[List["types.InputRichMessageMedia"]] = None,
+        reply_markup: Union["types.InlineKeyboardMarkup", type[object], None] = object
     ) -> Union["types.Message", bool]:
         """Edit the text of messages attached to callback queries.
 
@@ -211,11 +220,28 @@ class CallbackQuery(Object, Update):
                 By default, texts are parsed using both Markdown and HTML styles.
                 You can combine both syntaxes together.
 
+            link_preview_options (:obj:`~pyrogram.types.LinkPreviewOptions`, *optional*):
+                Link preview generation options for the message.
+
             disable_web_page_preview (``bool``, *optional*):
                 Disables link previews for links in this message.
 
+            rich_text (``str`` | :obj:`~pyrogram.types.InputRichMessage`, *optional*):
+                Rich content to send, as Markdown or HTML text or as a whole
+                :obj:`~pyrogram.types.InputRichMessage`.
+
+            rich_text_parse_mode (:obj:`~pyrogram.enums.ParseMode`, *optional*):
+                Parse mode for *rich_text*. Defaults to Markdown.
+                Ignored when *rich_text* is an :obj:`~pyrogram.types.InputRichMessage`.
+
+            rich_text_media (List of :obj:`~pyrogram.types.InputRichMessageMedia`, *optional*):
+                Media *rich_text* refers to through ``tg://photo?id=``, ``tg://video?id=``
+                or ``tg://audio?id=`` links.
+                Ignored when *rich_text* is an :obj:`~pyrogram.types.InputRichMessage`.
+
             reply_markup (:obj:`~pyrogram.types.InlineKeyboardMarkup`, *optional*):
                 An InlineKeyboardMarkup object.
+                Pass None to remove the existing reply markup.
 
         Returns:
             :obj:`~pyrogram.types.Message` | ``bool``: On success, if the edited message was sent by the bot, the edited
@@ -230,7 +256,11 @@ class CallbackQuery(Object, Update):
                 message_id=self.message.id,
                 text=text,
                 parse_mode=parse_mode,
+                link_preview_options=link_preview_options,
                 disable_web_page_preview=disable_web_page_preview,
+                rich_text=rich_text,
+                rich_text_parse_mode=rich_text_parse_mode,
+                rich_text_media=rich_text_media,
                 reply_markup=reply_markup
             )
         else:
@@ -238,7 +268,11 @@ class CallbackQuery(Object, Update):
                 inline_message_id=self.inline_message_id,
                 text=text,
                 parse_mode=parse_mode,
+                link_preview_options=link_preview_options,
                 disable_web_page_preview=disable_web_page_preview,
+                rich_text=rich_text,
+                rich_text_parse_mode=rich_text_parse_mode,
+                rich_text_media=rich_text_media,
                 reply_markup=reply_markup
             )
 
@@ -246,7 +280,7 @@ class CallbackQuery(Object, Update):
         self,
         caption: str,
         parse_mode: Optional["enums.ParseMode"] = None,
-        reply_markup: Optional["types.InlineKeyboardMarkup"] = None
+        reply_markup: Union["types.InlineKeyboardMarkup", type[object], None] = object
     ) -> Union["types.Message", bool]:
         """Edit the caption of media messages attached to callback queries.
 
@@ -262,6 +296,7 @@ class CallbackQuery(Object, Update):
 
             reply_markup (:obj:`~pyrogram.types.InlineKeyboardMarkup`, *optional*):
                 An InlineKeyboardMarkup object.
+                Pass None to remove the existing reply markup.
 
         Returns:
             :obj:`~pyrogram.types.Message` | ``bool``: On success, if the edited message was sent by the bot, the edited
@@ -275,7 +310,7 @@ class CallbackQuery(Object, Update):
     async def edit_message_media(
         self,
         media: "types.InputMedia",
-        reply_markup: Optional["types.InlineKeyboardMarkup"] = None
+        reply_markup: Union["types.InlineKeyboardMarkup", type[object], None] = object
     ) -> Union["types.Message", bool]:
         """Edit animation, audio, document, photo or video messages attached to callback queries.
 
@@ -287,6 +322,7 @@ class CallbackQuery(Object, Update):
 
             reply_markup (:obj:`~pyrogram.types.InlineKeyboardMarkup`, *optional*):
                 An InlineKeyboardMarkup object.
+                Pass None to remove the existing reply markup.
 
         Returns:
             :obj:`~pyrogram.types.Message` | ``bool``: On success, if the edited message was sent by the bot, the edited
@@ -311,7 +347,7 @@ class CallbackQuery(Object, Update):
 
     async def edit_message_reply_markup(
         self,
-        reply_markup: Optional["types.InlineKeyboardMarkup"] = None
+        reply_markup: Union["types.InlineKeyboardMarkup", type[object], None] = object
     ) -> Union["types.Message", bool]:
         """Edit only the reply markup of messages attached to callback queries.
 
@@ -320,6 +356,7 @@ class CallbackQuery(Object, Update):
         Parameters:
             reply_markup (:obj:`~pyrogram.types.InlineKeyboardMarkup`):
                 An InlineKeyboardMarkup object.
+                Pass None to remove the existing reply markup.
 
         Returns:
             :obj:`~pyrogram.types.Message` | ``bool``: On success, if the edited message was sent by the bot, the edited

@@ -16,7 +16,7 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
 
-from typing import Union
+from typing import Optional, Union
 
 import pyrogram
 from pyrogram import raw
@@ -30,7 +30,8 @@ class AddContact:
         first_name: str,
         last_name: str = "",
         phone_number: str = "",
-        share_phone_number: bool = False
+        share_phone_number: bool = False,
+        note: Optional[Union[str, "types.FormattedText"]] = None
     ):
         """Add an existing Telegram user as contact, even without a phone number.
 
@@ -53,6 +54,9 @@ class AddContact:
                 Whether or not to share the phone number with the user.
                 Defaults to False.
 
+            note (``str`` | :obj:`~pyrogram.types.FormattedText`, *optional*):
+                A note about the contact, visible to you only.
+
         Returns:
             :obj:`~pyrogram.types.User`: On success the user is returned.
 
@@ -65,13 +69,17 @@ class AddContact:
                 # Add contact by username
                 await app.add_contact("username", "Bar")
         """
+        if isinstance(note, str):
+            note = types.FormattedText(text=note)
+
         r = await self.invoke(
             raw.functions.contacts.AddContact(
                 id=await self.resolve_peer(user_id),
                 first_name=first_name,
                 last_name=last_name,
                 phone=phone_number,
-                add_phone_privacy_exception=share_phone_number
+                add_phone_privacy_exception=share_phone_number,
+                note=await note.write(self) if note is not None else None
             )
         )
 

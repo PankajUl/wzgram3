@@ -145,11 +145,11 @@ class InputInvoiceMessageContent(InputMessageContent):
             photo=raw.types.InputWebDocument(
                 url=self.photo_url,
                 mime_type="image/jpg",
-                size=self.photo_size,
+                size=self.photo_size or 0,
                 attributes=[
                     raw.types.DocumentAttributeImageSize(
-                        w=self.photo_width,
-                        h=self.photo_height
+                        w=self.photo_width or 0,
+                        h=self.photo_height or 0
                     )
                 ]
             ) if self.photo_url else None,
@@ -168,7 +168,7 @@ class InputInvoiceMessageContent(InputMessageContent):
                 suggested_tip_amounts=self.suggested_tip_amounts
             ),
             payload=self.payload.encode() if isinstance(self.payload, str) else self.payload,
-            provider=self.provider_token,
+            provider=self.provider_token or "",
             provider_data=raw.types.DataJSON(
                 data=self.provider_data if self.provider_data else "{}"
             ),

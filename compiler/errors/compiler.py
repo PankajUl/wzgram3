@@ -38,11 +38,26 @@ def caml(s):
     return "".join([str(i.title()) for i in s])
 
 
+def class_name(error_id):
+    s = caml(re.sub(r"_X", "_", error_id))
+    s = re.sub(r"^2", "Two", s)
+    return re.sub(r" ", "", s)
+
+
 def start():
     shutil.rmtree(DEST, ignore_errors=True)
     os.makedirs(DEST)
 
-    files = [i for i in os.listdir(os.path.join(HOME, "source"))]
+    files = sorted(os.listdir(os.path.join(HOME, "source")))
+    owners = {}
+
+    for i in files:
+        code, name = re.search(r"(\d+)_([A-Z_]+)", i).groups()
+
+        with open(os.path.join(HOME, "source", i), encoding="utf-8") as f_csv:
+            for row in list(csv.reader(f_csv, delimiter="\t"))[1:]:
+                if row:
+                    owners[class_name(row[0])] = "{}_{}".format(name.lower(), code)
 
     with open(NOTICE_PATH, encoding="utf-8") as f:
         notice = []
@@ -61,6 +76,7 @@ def start():
 
         for i in files:
             code, name = re.search(r"(\d+)_([A-Z_]+)", i).groups()
+            module = "{}_{}".format(name.lower(), code)
 
             f_all.write("    {}: {{\n".format(code))
 
@@ -81,6 +97,8 @@ def start():
                 name = " ".join([str(i.capitalize()) for i in re.sub(r"_", " ", name).lower().split(" ")])
 
                 sub_classes = []
+                imports = []
+                seen = set()
 
                 f_all.write("        \"_\": \"{}\",\n".format(super_class))
 
@@ -95,13 +113,22 @@ def start():
 
                     error_id, error_message = row
 
-                    sub_class = caml(re.sub(r"_X", "_", error_id))
-                    sub_class = re.sub(r"^2", "Two", sub_class)
-                    sub_class = re.sub(r" ", "", sub_class)
+                    sub_class = class_name(error_id)
+                    bases = super_class
+
+                    if owners[sub_class] != module:
+                        imports.append("from .{} import {}".format(owners[sub_class], sub_class))
+                        bases = "{}, {}".format(super_class, sub_class)
+                        sub_class += code
+                    elif sub_class in seen:
+                        bases = sub_class
+                        sub_class += "X"
+                    else:
+                        seen.add(sub_class)
 
                     f_all.write("        \"{}\": \"{}\",\n".format(error_id, sub_class))
 
-                    sub_classes.append((sub_class, error_id, error_message))
+                    sub_classes.append((sub_class, error_id, error_message, bases))
 
                 with open(os.path.join(HOME, "template", "class.txt"), "r", encoding="utf-8") as f_class_template:
                     class_template = f_class_template.read()
@@ -113,10 +140,11 @@ def start():
                         notice=notice,
                         super_class=super_class,
                         code=code,
+                        imports="".join(["\n" + k for k in imports]),
                         docstring='"""{}"""'.format(name),
                         sub_classes="".join([sub_class_template.format(
                             sub_class=k[0],
-                            super_class=super_class,
+                            super_class=k[3],
                             id="\"{}\"".format(k[1]),
                             docstring='"""{}"""'.format(k[2])
                         ) for k in sub_classes])

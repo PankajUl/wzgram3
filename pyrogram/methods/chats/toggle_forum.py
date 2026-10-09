@@ -34,7 +34,7 @@ class ToggleForum:
         chat_id: Union[int, str],
         enabled: Optional[bool] = None,
         tabs: Optional[bool] = None,
-    ) -> "types.Message":
+    ) -> bool:
         """Toggle forum mode in a supergroup.
 
         .. include:: /_includes/usable-by/users.rst
@@ -52,7 +52,7 @@ class ToggleForum:
 
 
         Returns:
-            :obj:`~pyrogram.types.Message`
+            ``bool``: True on success.
 
         Example:
             .. code-block:: python
@@ -60,7 +60,7 @@ class ToggleForum:
                 await app.toggle_forum(chat_id, ...)
         """
 
-        r = await self.invoke(
+        await self.invoke(
             raw.functions.channels.ToggleForum(
                 
                 channel=await self.resolve_peer(chat_id),
@@ -69,13 +69,4 @@ class ToggleForum:
             )
         )
 
-        for i in r.updates:
-            if isinstance(i, (raw.types.UpdateNewMessage,
-                              raw.types.UpdateNewChannelMessage,
-                              raw.types.UpdateNewScheduledMessage)):
-                return await types.Message._parse(
-                    self, i.message,
-                    {i.id: i for i in r.users},
-                    {i.id: i for i in r.chats},
-                    is_scheduled=isinstance(i, raw.types.UpdateNewScheduledMessage)
-                )
+        return True

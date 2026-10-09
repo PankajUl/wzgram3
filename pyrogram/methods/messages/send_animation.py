@@ -389,18 +389,20 @@ class SendAnimation:
                         if isinstance(i, (raw.types.UpdateNewMessage,
                                           raw.types.UpdateNewChannelMessage,
                                           raw.types.UpdateNewScheduledMessage,
-                                          raw.types.UpdateNewEphemeralMessage)):
+                                          raw.types.UpdateNewEphemeralMessage,
+                                          raw.types.UpdateBotNewBusinessMessage)):
                             message = await types.Message._parse(
                                 self, i.message,
                                 {i.id: i for i in r.users},
                                 {i.id: i for i in r.chats},
-                                is_scheduled=isinstance(i, raw.types.UpdateNewScheduledMessage)
+                                is_scheduled=isinstance(i, raw.types.UpdateNewScheduledMessage),
+                                business_connection_id=getattr(i, "connection_id", None),
+                                raw_reply_to_message=getattr(i, "reply_to_message", None)
                             )
 
-                            if unsave:
-                                document = message.animation or message.document
+                            if unsave and message.animation:
                                 document_id = utils.get_input_media_from_file_id(
-                                    document.file_id, FileType.ANIMATION
+                                    message.animation.file_id, FileType.ANIMATION
                                 ).id
 
                                 await self.invoke(

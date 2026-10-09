@@ -30,7 +30,8 @@ class BanChatMember:
         chat_id: Union[int, str],
         user_id: Union[int, str],
         until_date: datetime = utils.zero_datetime(),
-        revoke_messages: Optional[bool] = None
+        revoke_messages: Optional[bool] = None,
+        revoke_reactions: Optional[bool] = None
     ) -> Union["types.Message", bool]:
         """Ban a user from a group, a supergroup or a channel.
         In the case of supergroups and channels, the user will not be able to return to the group on their own using
@@ -59,6 +60,9 @@ class BanChatMember:
 
             revoke_messages (``bool``, *optional*):
                 Pass True to delete all the messages sent by the user in a basic group.
+
+            revoke_reactions (``bool``, *optional*):
+                Pass True to delete all the reactions the user left in the chat.
 
         Returns:
             :obj:`~pyrogram.types.Message` | ``bool``: On success, a service message will be returned (when applicable),
@@ -96,12 +100,28 @@ class BanChatMember:
                     )
                 )
             )
+
+            if revoke_messages:
+                await self.invoke(
+                    raw.functions.channels.DeleteParticipantHistory(
+                        channel=chat_peer,
+                        participant=user_peer
+                    )
+                )
         else:
             r = await self.invoke(
                 raw.functions.messages.DeleteChatUser(
                     chat_id=chat_peer.chat_id,
                     user_id=user_peer,
                     revoke_history=revoke_messages
+                )
+            )
+
+        if revoke_reactions:
+            await self.invoke(
+                raw.functions.messages.DeleteParticipantReactions(
+                    peer=chat_peer,
+                    participant=user_peer
                 )
             )
 

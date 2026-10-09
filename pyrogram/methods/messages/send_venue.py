@@ -217,8 +217,8 @@ class SendVenue:
                     title=title,
                     address=address,
                     provider="foursquare" if foursquare_id or foursquare_type else "",
-                    venue_id=foursquare_id,
-                    venue_type=foursquare_type
+                    venue_id=foursquare_id or "",
+                    venue_type=foursquare_type or ""
                 ),
                 message="",
                 silent=disable_notification if disable_notification is not None else None,
@@ -253,10 +253,13 @@ class SendVenue:
             if isinstance(i, (raw.types.UpdateNewMessage,
                               raw.types.UpdateNewChannelMessage,
                               raw.types.UpdateNewScheduledMessage,
-                              raw.types.UpdateNewEphemeralMessage)):
+                              raw.types.UpdateNewEphemeralMessage,
+                              raw.types.UpdateBotNewBusinessMessage)):
                 return await types.Message._parse(
                     self, i.message,
                     {i.id: i for i in r.users},
                     {i.id: i for i in r.chats},
-                    is_scheduled=isinstance(i, raw.types.UpdateNewScheduledMessage)
+                    is_scheduled=isinstance(i, raw.types.UpdateNewScheduledMessage),
+                    business_connection_id=getattr(i, "connection_id", None),
+                    raw_reply_to_message=getattr(i, "reply_to_message", None)
                 )

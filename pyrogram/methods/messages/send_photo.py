@@ -41,6 +41,7 @@ class SendPhoto:
         caption_entities: Optional[List["types.MessageEntity"]] = None,
         has_spoiler: Optional[bool] = None,
         ttl_seconds: Optional[int] = None,
+        view_once: Optional[bool] = None,
         disable_notification: Optional[bool] = None,
         reply_to_message_id: Optional[int] = None,
         reply_to_chat_id: Optional[Union[int, str]] = None,
@@ -109,6 +110,11 @@ class SendPhoto:
                 Self-Destruct Timer.
                 If you set a timer, the photo will self-destruct in *ttl_seconds*
                 seconds after it was viewed.
+
+            view_once (``bool``, *optional*):
+                Pass True if the photo must be opened once and disappear afterwards.
+                Self-destructing media only works in private chats; a group or a
+                channel drops the timer.
 
             disable_notification (``bool``, *optional*):
                 Sends the message silently.
@@ -256,6 +262,9 @@ class SendPhoto:
                     quote_entities=quote_entities,
                 )
 
+        if view_once:
+            ttl_seconds = (1 << 31) - 1
+
         file = None
 
         try:
@@ -325,12 +334,15 @@ class SendPhoto:
                         if isinstance(i, (raw.types.UpdateNewMessage,
                                           raw.types.UpdateNewChannelMessage,
                                           raw.types.UpdateNewScheduledMessage,
-                                          raw.types.UpdateNewEphemeralMessage)):
+                                          raw.types.UpdateNewEphemeralMessage,
+                                          raw.types.UpdateBotNewBusinessMessage)):
                             return await types.Message._parse(
                                 self, i.message,
                                 {i.id: i for i in r.users},
                                 {i.id: i for i in r.chats},
-                                is_scheduled=isinstance(i, raw.types.UpdateNewScheduledMessage)
+                                is_scheduled=isinstance(i, raw.types.UpdateNewScheduledMessage),
+                                business_connection_id=getattr(i, "connection_id", None),
+                                raw_reply_to_message=getattr(i, "reply_to_message", None)
                             )
 
                     # a send that succeeded is never re-sent, whatever the answer carried

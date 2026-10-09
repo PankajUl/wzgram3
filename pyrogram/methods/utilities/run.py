@@ -16,7 +16,6 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
 
-import asyncio
 import inspect
 
 import pyrogram
@@ -76,11 +75,7 @@ class Run:
 
                 app.run(main())
         """
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.get_event_loop_policy().get_event_loop()
-        run = loop.run_until_complete
+        run = self.loop.run_until_complete
 
         if coroutine is not None:
             run(coroutine)

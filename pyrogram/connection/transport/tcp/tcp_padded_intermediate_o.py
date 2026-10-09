@@ -33,8 +33,8 @@ log = logging.getLogger(__name__)
 class TCPPaddedIntermediateO(TCP):
     RESERVED = (b"HEAD", b"POST", b"GET ", b"OPTI", b"\xdd" * 4, b"\xee" * 4)
 
-    def __init__(self, ipv6: bool, proxy: dict, crypto_executor=None, loop: Optional[asyncio.AbstractEventLoop] = None):
-        super().__init__(ipv6, proxy, crypto_executor, loop)
+    def __init__(self, ipv6: bool = False, proxy=None, crypto_executor=None, loop: Optional[asyncio.AbstractEventLoop] = None, dc_id: Optional[int] = None):
+        super().__init__(ipv6, proxy, crypto_executor, loop, dc_id)
 
         self.encrypt = None
         self.decrypt = None

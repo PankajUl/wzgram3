@@ -15,6 +15,8 @@
 #
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
+from typing import Optional
+
 import pyrogram
 from pyrogram import raw
 from pyrogram import types
@@ -24,7 +26,10 @@ class CreateSupergroup:
     async def create_supergroup(
         self: "pyrogram.Client",
         title: str,
-        description: str = ""
+        description: str = "",
+        is_forum: Optional[bool] = None,
+        message_auto_delete_time: Optional[int] = None,
+        for_import: Optional[bool] = None
     ) -> "types.Chat":
         """Create a new supergroup.
 
@@ -41,6 +46,15 @@ class CreateSupergroup:
             description (``str``, *optional*):
                 The supergroup description.
 
+            is_forum (``bool``, *optional*):
+                Pass True to create the supergroup with topics enabled.
+
+            message_auto_delete_time (``int``, *optional*):
+                Time after which messages are automatically deleted, in seconds.
+
+            for_import (``bool``, *optional*):
+                Pass True if the supergroup is created to import messages from another app.
+
         Returns:
             :obj:`~pyrogram.types.Chat`: On success, a chat object is returned.
 
@@ -53,7 +67,10 @@ class CreateSupergroup:
             raw.functions.channels.CreateChannel(
                 title=title,
                 about=description,
-                megagroup=True
+                megagroup=True,
+                forum=is_forum,
+                ttl_period=message_auto_delete_time,
+                for_import=for_import
             )
         )
 

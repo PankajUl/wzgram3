@@ -31,7 +31,9 @@ class UpdateChatNotifications:
         chat_id: Union[int, str],
         mute: Optional[bool] = None,
         mute_until: Optional[datetime] = None,
-        show_previews: Optional[bool] = None
+        show_previews: Optional[bool] = None,
+        stories_muted: Optional[bool] = None,
+        stories_hide_sender: Optional[bool] = None
     ) -> bool:
         """Update the notification settings of a chat.
 
@@ -50,6 +52,12 @@ class UpdateChatNotifications:
 
             show_previews (``bool``, *optional*):
                 Pass True to show message previews in notifications, False to hide them.
+
+            stories_muted (``bool``, *optional*):
+                Pass True to mute the notifications for the stories of the chat.
+
+            stories_hide_sender (``bool``, *optional*):
+                Pass True to hide the name of the sender in story notifications.
 
         Returns:
             ``bool``: On success, True is returned.
@@ -78,7 +86,9 @@ class UpdateChatNotifications:
                 ),
                 settings=raw.types.InputPeerNotifySettings(
                     show_previews=show_previews,
-                    mute_until=mute_until_ts
+                    mute_until=mute_until_ts,
+                    stories_muted=stories_muted,
+                    stories_hide_sender=stories_hide_sender
                 )
             )
         )

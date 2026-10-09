@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
@@ -1119,6 +1119,38 @@ class TestInlineKeyboardButtonAdditions:
         assert written.type.copy_text == "hello"
         assert types.InlineKeyboardButton.read(written).copy_text.text == "hello"
 
+    async def test_copy_text_accepts_str_directly(self):
+        button = types.InlineKeyboardButton("Copy Phone", copy_text="+18005550199")
+
+        assert isinstance(button.copy_text, types.CopyTextButton)
+        assert button.copy_text.text == "+18005550199"
+
+        client = AsyncMock()
+        written = await button.write(client)
+
+        assert written.type == raw.types.InlineButtonTypeCopy(copy_text="+18005550199")
+
+    async def test_login_url_carries_its_fields(self):
+        button = types.InlineKeyboardButton(
+            "Login",
+            login_url=types.LoginUrl(
+                url="https://example.com",
+                forward_text="Sign in",
+                request_write_access=True
+            )
+        )
+
+        client = AsyncMock()
+        client.resolve_peer = AsyncMock(return_value=raw.types.InputUserSelf())
+        written = await button.write(client)
+
+        assert written.type == raw.types.InputInlineButtonTypeUrlAuth(
+            url="https://example.com",
+            request_write_access=True,
+            fwd_text="Sign in",
+            bot=raw.types.InputUserSelf()
+        )
+
     async def test_pay_round_trips(self):
         written = await self.written(text="Pay", pay=True)
 
@@ -1214,7 +1246,7 @@ class TestEphemeralMessageWithoutAPeer:
 
     async def test_an_outgoing_message_is_a_chat_with_the_receiver(self):
         parsed = await types.Message._parse(
-            Mock(), _ephemeral_message(out=True), self.users, {}
+            MagicMock(), _ephemeral_message(out=True), self.users, {}
         )
 
         assert parsed.chat is not None, "a message with no peer still has a counterpart"
@@ -1223,7 +1255,7 @@ class TestEphemeralMessageWithoutAPeer:
 
     async def test_an_incoming_message_is_a_chat_with_the_sender(self):
         parsed = await types.Message._parse(
-            Mock(), _ephemeral_message(out=False), self.users, {}
+            MagicMock(), _ephemeral_message(out=False), self.users, {}
         )
 
         assert parsed.chat is not None
@@ -1231,7 +1263,7 @@ class TestEphemeralMessageWithoutAPeer:
 
     async def test_a_message_with_a_peer_still_uses_it(self):
         message = _ephemeral_message(out=True, peer_id=raw.types.PeerUser(user_id=1))
-        parsed = await types.Message._parse(Mock(), message, self.users, {})
+        parsed = await types.Message._parse(MagicMock(), message, self.users, {})
 
         assert parsed.chat.id == 1
 
@@ -1259,7 +1291,7 @@ class TestEphemeralCallbackQuery:
         )
         users = {1: _raw_user(1, "Sender"), 2: _raw_user(2, "Receiver")}
 
-        parsed = await types.CallbackQuery._parse(Mock(), update, users, {})
+        parsed = await types.CallbackQuery._parse(MagicMock(), update, users, {})
 
         assert parsed.id == "5"
         assert parsed.data == "payload"
@@ -1517,7 +1549,7 @@ class TestQuizPollSerialises:
         client.invoke = invoke
         client.resolve_peer = AsyncMock(return_value=raw.types.InputPeerSelf())
         client.rnd_id = lambda: 1
-        client.parser.parse = AsyncMock(return_value={"message": "q", "entities": []})
+        client.parser.parse = AsyncMock(side_effect=lambda text, *args: {"message": text, "entities": []})
 
         await SendPoll.send_poll(client, chat_id=1, **kwargs)
 
@@ -1638,3 +1670,264 @@ def test_an_object_still_reports_its_own_shape():
     assert repr(types.List([username])) == f"pyrogram.types.List([{username!r}])"
     assert "pyrogram.types.Username(" in repr(username)
 
+
+# ---------------------------------------------------------------------------
+#  Object.__eq__ equality and hashing
+# ---------------------------------------------------------------------------
+
+def test_two_objects_of_one_class_holding_the_same_values_are_equal() -> None:
+    someone = types.Username(
+        username="someone",
+        active=True,
+    )
+    the_same_someone = types.Username(
+        username="someone",
+        active=True,
+    )
+
+    assert someone == the_same_someone
+    assert the_same_someone == someone
+
+
+def test_two_objects_of_one_class_holding_different_values_are_not_equal() -> None:
+    someone = types.Username(
+        username="someone",
+        active=True,
+    )
+    somebody = types.Username(
+        username="somebody",
+        active=True,
+    )
+
+    assert someone != somebody
+    assert somebody != someone
+
+
+def test_two_classes_carrying_the_same_attributes_are_not_equal_either_way() -> None:
+    thinking = types.RichBlockThinking(text="x")
+    paragraph = types.RichBlockParagraph(text="x")
+
+    assert thinking != paragraph
+    assert paragraph != thinking
+
+
+def test_an_object_with_no_attributes_of_its_own_equals_only_its_own_class() -> None:
+    unsupported = types.RichBlockUnsupported()
+
+    assert unsupported == types.RichBlockUnsupported()
+    assert unsupported != types.RichBlockThinking(text="x")
+    assert types.RichBlockThinking(text="x") != unsupported
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        pytest.param(None, id="none"),
+        pytest.param(42, id="int"),
+        pytest.param("", id="str"),
+    ],
+)
+def test_an_object_never_equals_a_value_that_is_not_an_object(other: str | int | None) -> None:
+    unsupported = types.RichBlockUnsupported()
+
+    assert unsupported != other
+    assert other != unsupported
+
+
+def test_the_bound_client_is_not_part_of_the_comparison() -> None:
+    client = pyrogram.Client(
+        "test",
+        api_id=1,
+        api_hash="0" * 32,
+        in_memory=True,
+    )
+
+    bound = types.Chat(
+        client=client,
+        id=42,
+        type=enums.ChatType.PRIVATE,
+    )
+    unbound = types.Chat(
+        id=42,
+        type=enums.ChatType.PRIVATE,
+    )
+
+    assert bound == unbound
+    assert unbound == bound
+
+
+def test_an_object_stays_unhashable() -> None:
+    with pytest.raises(TypeError):
+        hash(types.RichBlockUnsupported())
+
+
+# ---------------------------------------------------------------------------
+#  Str surrogate pair indexing and slicing
+# ---------------------------------------------------------------------------
+
+_EMOJI_TEXT = "😀 250"
+
+
+@pytest.mark.parametrize(
+    ("item", "expected"),
+    [
+        pytest.param(0, "😀", id="leading-half"),
+        pytest.param(1, "😀", id="trailing-half"),
+        pytest.param(2, " ", id="after-the-pair"),
+        pytest.param(-1, "0", id="from-the-end"),
+    ],
+)
+def test_an_index_inside_a_surrogate_pair_gives_the_whole_code_point(
+    item: int,
+    expected: str,
+) -> None:
+    assert MessageStr(_EMOJI_TEXT)[item] == expected
+
+
+@pytest.mark.parametrize(
+    ("item", "expected"),
+    [
+        pytest.param(slice(0, 1), "😀", id="leading-half-only"),
+        pytest.param(slice(1, 2), "😀", id="trailing-half-only"),
+        pytest.param(slice(0, 2), "😀", id="the-whole-pair"),
+        pytest.param(slice(1, 3), "😀 ", id="opening-inside-the-pair"),
+        pytest.param(slice(2, None), " 250", id="past-the-pair"),
+        pytest.param(slice(None, None, -1), "052 😀", id="reversed"),
+    ],
+)
+def test_a_slice_cutting_a_surrogate_pair_widens_to_the_whole_code_point(
+    item: slice,
+    expected: str,
+) -> None:
+    assert MessageStr(_EMOJI_TEXT)[item] == expected
+
+
+def test_an_entity_offset_still_indexes_the_text_that_entity_marks() -> None:
+    entity = types.MessageEntity(
+        type=enums.MessageEntityType.BOLD,
+        offset=3,
+        length=4,
+    )
+    text = MessageStr("😀 bold").init([entity])
+
+    assert text[entity.offset : entity.offset + entity.length] == "bold"
+
+
+_EMPTY_CAPTION = raw.types.PageCaption(
+    text=raw.types.TextEmpty(),
+    credit=raw.types.TextEmpty(),
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "block",
+    [
+        pytest.param(
+            raw.types.PageBlockVideo(
+                video_id=1,
+                caption=_EMPTY_CAPTION,
+            ),
+            id="video",
+        ),
+        pytest.param(
+            raw.types.PageBlockDocument(
+                document_id=1,
+                caption=_EMPTY_CAPTION,
+            ),
+            id="document",
+        ),
+        pytest.param(
+            raw.types.PageBlockAudio(
+                audio_id=1,
+                caption=_EMPTY_CAPTION,
+            ),
+            id="audio",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "documents",
+    [
+        pytest.param({}, id="absent"),
+        pytest.param({1: raw.types.DocumentEmpty(id=1)}, id="empty"),
+    ],
+)
+async def test_a_media_block_without_a_usable_document_is_unsupported(
+    block: raw.base.PageBlock,
+    *,
+    documents: dict[int, raw.base.Document],
+) -> None:
+    parsed = await types.RichBlock._parse(None, block, {}, documents, {}, {})
+    assert type(parsed) is types.RichBlockUnsupported
+
+
+@pytest.mark.asyncio
+async def test_a_media_block_inside_a_list_item_still_finds_its_document() -> None:
+    document = raw.types.Document(
+        id=555,
+        access_hash=666,
+        file_reference=b"ref",
+        date=0,
+        mime_type="application/pdf",
+        size=10,
+        dc_id=2,
+        attributes=[raw.types.DocumentAttributeFilename(file_name="a.pdf")],
+    )
+
+    parsed = await types.RichBlock._parse(
+        None,
+        raw.types.PageBlockList(
+            items=[
+                raw.types.PageListItemBlocks(
+                    blocks=[
+                        raw.types.PageBlockDocument(
+                            document_id=555,
+                            caption=_EMPTY_CAPTION,
+                        )
+                    ]
+                )
+            ]
+        ),
+        {},
+        {555: document},
+        {},
+        {},
+    )
+
+    assert parsed.items[0].blocks[0].document.file_name == "a.pdf"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ids",
+    [
+        {"foursquare_id": "x"},
+        {"foursquare_type": "x"},
+        {"google_place_id": "x"},
+        {"google_place_type": "x"},
+    ],
+)
+async def test_a_venue_with_half_an_identifier_pair_still_serializes(ids) -> None:
+    media = await types.InputMediaVenue(
+        latitude=1.0, longitude=2.0, title="t", address="a", **ids
+    ).write()
+
+    media.write()
+
+
+@pytest.mark.asyncio
+async def test_giveaway_winners_parse_when_the_launch_message_is_gone():
+    from pyrogram.errors import MessageIdsEmpty
+
+    client = MagicMock()
+    client.get_messages = AsyncMock(side_effect=MessageIdsEmpty())
+    channel = raw.types.Channel(id=7, title="t", photo=raw.types.ChatPhotoEmpty(), date=0, usernames=[], restriction_reason=[])
+    media = raw.types.MessageMediaGiveawayResults(
+        channel_id=7, launch_msg_id=5, winners_count=1, unclaimed_count=0, winners=[], until_date=0
+    )
+
+    winners = await types.GiveawayWinners._parse(client, media, {}, {7: channel})
+
+    assert winners.giveaway_message_id == 5
+    assert winners.giveaway_message is None

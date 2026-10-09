@@ -1,7 +1,11 @@
 import asyncio
+import gc
 import logging
 import socket
+import tempfile
 import time
+from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,13 +13,26 @@ import pytest
 import pyrogram
 import pyrogram.session.session as session_mod
 from pyrogram import raw
-from pyrogram.connection.transport.tcp.tcp import TCP
 from pyrogram.connection import Connection
+from pyrogram.connection.connection import Connection
+from pyrogram.connection.transport.tcp.tcp import TCP
 from pyrogram.connection.transport.tcp.tcp_abridged import TCPAbridged
 from pyrogram.dispatcher import Dispatcher
+from pyrogram.errors import (
+    UnknownError,
+    PersistentTimestampInvalid,
+    PersistentTimestampOutdated,
+    PeerIdInvalid,
+)
+from pyrogram.errors.rpc_error import RPCError
 from pyrogram.file_id import FileId, FileType
+from pyrogram.methods.advanced.recover_gaps import RecoverGaps
+from pyrogram.session.auth import Auth
 from pyrogram.session.internals import MsgId
 from pyrogram.session.session import ConnectionLost, Result, Session
+from pyrogram.storage import SQLiteStorage
+from tests.test_audit_regressions import make_dispatcher as make_audit_dispatcher
+from tests.test_session import DummyClient as SessionDummyClient
 
 
 class DummyClient:
@@ -659,6 +676,50 @@ async def test_the_updates_queue_stays_bounded():
     )
 
 
+async def test_update_batches_waiting_for_handlers_are_capped(monkeypatch, caplog):
+    class BlockedClient(DummyClient):
+        def __init__(self):
+            super().__init__()
+            self.gate = asyncio.Event()
+
+        async def handle_updates(self, body):
+            await self.gate.wait()
+            self.updates.append(body)
+
+    client = BlockedClient()
+    session = make_session(client)
+    session.connection = RecordingConnection()
+    monkeypatch.setattr(Session, "MAX_PENDING_UPDATES", 40)
+
+    body = raw.types.UpdatesTooLong().write()
+    base = MsgId() | 1
+
+    with caplog.at_level("WARNING"):
+        for i in range(100):
+            monkeypatch.setattr(
+                session_mod.warpcrypto, "unpack_message", unpacked_as(base + 4 * i, body)
+            )
+            await session.handle_packet(b"ignored")
+
+        assert session._pending_updates == 40, (
+            "update batches must stop piling up once handlers fall behind"
+        )
+        assert session._dropped_updates == 60
+        assert caplog.text.count("Dropping") == 1, "one warning per overload, not one per batch"
+
+        client.gate.set()
+
+        for _ in range(100):
+            if session._pending_updates == 0:
+                break
+            await asyncio.sleep(0.01)
+
+    assert len(client.updates) == 40
+    assert session._pending_updates == 0
+    assert session._dropped_updates == 0
+    assert "Dropped 60 update batches" in caplog.text
+
+
 class FakeSession:
     def __init__(self, last_used: float, results=None):
         self.last_used = last_used
@@ -679,6 +740,35 @@ class ReapableClient:
     def __init__(self):
         self.media_session_pools = {}
         self._media_sessions_locks = {}
+        self.media_sessions = {}
+        self.sessions = {}
+        self._session_locks = {}
+        self.session = FakeSession(last_used=0)
+
+
+async def test_reaping_also_closes_the_idle_per_dc_sessions():
+    import time
+
+    now = time.monotonic()
+    client = ReapableClient()
+
+    idle_media = FakeSession(last_used=now - 10_000)
+    idle_foreign = FakeSession(last_used=now - 10_000)
+    busy_media = FakeSession(last_used=now - 10_000, results={1: object()})
+    fresh_foreign = FakeSession(last_used=now)
+    client.media_sessions = {2: idle_media, 4: busy_media}
+    client.sessions = {2: idle_foreign, 4: fresh_foreign, 1: client.session}
+
+    reaped = await client.reap_media_sessions(idle_timeout=300)
+
+    assert reaped == 2
+    assert idle_media.stopped and idle_foreign.stopped
+    assert not busy_media.stopped and not fresh_foreign.stopped
+    assert not client.session.stopped, "the main session is never reaped"
+    assert client.media_sessions == {4: busy_media}
+    assert client.sessions == {4: fresh_foreign, 1: client.session}, (
+        "a stopped session left in the dict would be handed out again and fail"
+    )
 
 
 async def test_reaping_closes_idle_sessions_and_keeps_busy_ones():
@@ -759,8 +849,6 @@ async def test_a_keepalive_ping_does_not_count_as_use(monkeypatch):
     assert session.last_used == 0.0, (
         "pings must not keep an otherwise idle pooled session alive forever"
     )
-
-
 CHUNK = 1024 * 1024
 
 
@@ -935,8 +1023,6 @@ class SlowLink(SharedLink):
                 self.inflight[id(session)] -= 1
 
         return send
-
-
 DEADLINE = 0.1
 STEP = 0.004
 PARALLEL_WORKERS = 48
@@ -1589,3 +1675,773 @@ def test_an_unknown_constructor_still_raises_key_error():
 
     with pytest.raises(KeyError):
         TLObject.read(BytesIO((0x0BADF00D).to_bytes(4, "little")))
+
+
+class _WatchdogClient:
+    UPDATES_WATCHDOG_INTERVAL = 0.05
+    updates_watchdog = pyrogram.Client.updates_watchdog
+
+    def __init__(self):
+        self.updates_watchdog_event = asyncio.Event()
+        self.calls = 0
+
+        # an update arrived an hour of monotonic time ago, and the host clock
+        # then stepped back an hour, so the wall-clock stamp is in the future
+        self.last_update_time = datetime.now() + timedelta(hours=1)
+        self._last_update_monotonic = time.monotonic() - 3600
+
+    async def invoke(self, query, **kwargs):
+        self.calls += 1
+
+    async def recover_gaps(self):
+        return (0, 0)
+
+
+async def test_the_updates_watchdog_measures_idle_time_on_the_monotonic_clock():
+    client = _WatchdogClient()
+
+    task = asyncio.ensure_future(client.updates_watchdog())
+    await asyncio.sleep(0.3)
+
+    try:
+        assert client.calls > 0, (
+            "idle time is a duration, so a host clock that steps backwards must "
+            "not stall the watchdog for the length of the step"
+        )
+    finally:
+        client.updates_watchdog_event.set()
+        await asyncio.wait_for(task, timeout=5)
+
+
+async def test_a_small_write_batch_is_committed_without_waiting_for_more(monkeypatch, tmp_path):
+    monkeypatch.setattr(SQLiteStorage, "_AUTO_COMMIT_SECONDS", 0.1)
+
+    storage = SQLiteStorage("bounded", tmp_path, in_memory=True)
+    await storage.open()
+
+    try:
+        await storage.update_peers([(1, 2, "user", None)])
+
+        assert storage._dirty, "one write is below the batch size, so it is still pending"
+
+        await asyncio.sleep(0.4)
+
+        assert not storage._dirty, (
+            "a batch that never reaches its size sits in an open write transaction "
+            "for as long as the process runs; a kill loses it and the transaction "
+            "keeps the WAL from being checkpointed"
+        )
+    finally:
+        await storage.close()
+
+
+async def test_a_stopped_dispatcher_leaves_nothing_in_its_queue():
+    dispatcher = make_audit_dispatcher()
+
+    await dispatcher.start()
+
+    # a worker cancelled during a previous stop never took its sentinel
+    dispatcher.updates_queue.put_nowait(None)
+
+    await dispatcher.stop()
+
+    assert dispatcher.updates_queue.empty(), (
+        "a sentinel left in the queue retires a worker of the next generation the "
+        "instant it starts, and parsed updates left there hold their peer graphs"
+    )
+
+    await dispatcher.start()
+    await asyncio.sleep(0.05)
+    dispatcher.prune_workers()
+
+    assert len(dispatcher.handler_worker_tasks) == dispatcher.client.workers, (
+        "every worker of a freshly started dispatcher must still be running"
+    )
+
+    await dispatcher.stop()
+
+
+def _unknown():
+    RPCError.raise_it(
+        raw.types.RpcError(error_code=999, error_message="NOT_A_REAL_ERROR"),
+        raw.functions.Ping,
+    )
+
+
+async def test_an_unknown_error_does_not_write_to_the_working_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(UnknownError):
+        _unknown()
+
+    assert not (tmp_path / "unknown_errors.txt").exists(), (
+        "a library must not append to a file in the caller's working directory, "
+        "unbounded, from inside an exception constructor"
+    )
+
+
+async def test_an_unwritable_working_directory_does_not_replace_the_error(monkeypatch):
+    import builtins
+
+    real_open = builtins.open
+
+    def refusing_open(*args, **kwargs):
+        if args and str(args[0]).endswith("unknown_errors.txt"):
+            raise OSError(30, "Read-only file system")
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", refusing_open)
+
+    with pytest.raises(UnknownError):
+        _unknown()
+
+
+class _AckRecordingConnection:
+    def __init__(self):
+        self.protocol = None
+
+    async def close(self):
+        pass
+
+
+async def test_pending_acks_are_flushed_even_when_the_link_goes_quiet(monkeypatch):
+    from tests.test_stability import make_session
+
+    monkeypatch.setattr(pyrogram.session.Session, "PING_INTERVAL", 0.05)
+
+    session = make_session()
+    session.connection = _AckRecordingConnection()
+    session.pending_acks = {12345}
+
+    sent = []
+
+    async def record(data, wait_response=True, **kwargs):
+        sent.append(data)
+
+    monkeypatch.setattr(session, "send", record)
+
+    task = asyncio.ensure_future(session.ping_worker())
+    await asyncio.sleep(0.3)
+    session.ping_task_event.set()
+    await asyncio.wait_for(task, timeout=5)
+
+    assert any(isinstance(d, raw.types.MsgsAck) for d in sent), (
+        "acks are only flushed once ACKS_THRESHOLD of them pile up inside "
+        "handle_packet, so a link that goes quiet below that leaves them owed "
+        "and the server re-delivers those updates for as long as the client runs"
+    )
+    assert not session.pending_acks
+
+
+async def test_idle_puts_back_the_signal_handlers_it_took():
+    import signal
+
+    from pyrogram.methods.utilities.idle import idle
+
+    watched = (signal.SIGINT, signal.SIGTERM, signal.SIGABRT)
+    before = {s: signal.getsignal(s) for s in watched}
+
+    task = asyncio.ensure_future(idle())
+    await asyncio.sleep(0.05)
+
+    assert signal.getsignal(signal.SIGINT) is not before[signal.SIGINT], (
+        "idle should have installed its own handler by now"
+    )
+
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert {s: signal.getsignal(s) for s in watched} == before, (
+        "idle leaves its handler installed, so the next Ctrl-C cancels a task "
+        "that is already done and the process can no longer be interrupted - "
+        "including during the client.stop() that Client.run does next"
+    )
+
+
+@pytest.fixture
+def storage(tmp_path):
+    return SQLiteStorage("hotpath", tmp_path)
+
+
+async def test_a_peer_is_read_from_the_database_once(storage):
+    await storage.open()
+
+    try:
+        await storage.update_peers([(7, 99, "user", None)])
+
+        queries = []
+        original = storage.conn.execute
+
+        async def counting(sql, *args, **kwargs):
+            queries.append(sql)
+            return await original(sql, *args, **kwargs)
+
+        storage.conn.execute = counting
+
+        first = await storage.get_peer_by_id(7)
+        second = await storage.get_peer_by_id(7)
+
+        assert first == second
+        assert not [q for q in queries if "FROM peers" in q], (
+            "a peer lookup costs a thread hand-off into aiosqlite; resolve_peer "
+            "runs on every send, so the same peer must not be fetched twice"
+        )
+    finally:
+        await storage.close()
+
+
+async def test_a_changed_access_hash_is_still_written(storage):
+    await storage.open()
+
+    try:
+        await storage.update_peers([(7, 99, "user", None)])
+        assert (await storage.get_peer_by_id(7)).access_hash == 99
+
+        await storage.update_peers([(7, 1234, "user", None)])
+
+        assert (await storage.get_peer_by_id(7)).access_hash == 1234, (
+            "skipping a write the cache already knows must not skip a peer whose "
+            "access hash actually changed"
+        )
+    finally:
+        await storage.close()
+
+
+async def test_a_cached_peer_survives_a_reopen(storage):
+    await storage.open()
+    await storage.update_peers([(7, 99, "user", None)])
+    await storage.close()
+
+    await storage.open()
+
+    try:
+        assert (await storage.get_peer_by_id(7)).access_hash == 99, (
+            "the cache must not be what a peer is stored in"
+        )
+    finally:
+        await storage.close()
+
+
+async def test_an_unchanged_peer_is_not_rewritten(storage):
+    await storage.open()
+
+    try:
+        await storage.update_peers([(7, 99, "user", None)])
+
+        writes = []
+        original = storage.conn.executemany
+
+        async def counting(sql, *args, **kwargs):
+            writes.append(sql)
+            return await original(sql, *args, **kwargs)
+
+        storage.conn.executemany = counting
+
+        await storage.update_peers([(7, 99, "user", None)])
+
+        assert not writes, (
+            "every invoke feeds r.users and r.chats back through fetch_peers, so "
+            "the same unchanged peers are written over and over"
+        )
+    finally:
+        await storage.close()
+
+
+class _StateClient:
+    handle_updates = pyrogram.Client.handle_updates
+    _save_update_state = pyrogram.Client._save_update_state
+
+    def __init__(self):
+        self.states = []
+        self._state_marks = {}
+        self.enqueued = []
+
+        outer = self
+
+        class _Storage:
+            async def update_state(self, value=object):
+                outer.states.append(value)
+
+        class _Dispatcher:
+            async def enqueue_update(self, update, users, chats):
+                outer.enqueued.append(update)
+                return True
+
+        self.storage = _Storage()
+        self.dispatcher = _Dispatcher()
+
+    async def fetch_peers(self, peers):
+        return False
+
+
+async def test_one_state_write_per_peer_per_batch():
+    client = _StateClient()
+
+    updates = raw.types.Updates(
+        updates=[
+            raw.types.UpdateNewMessage(
+                message=raw.types.MessageEmpty(id=i), pts=i + 1, pts_count=1
+            )
+            for i in range(30)
+        ],
+        users=[],
+        chats=[],
+        date=1700000000,
+        seq=1,
+    )
+
+    await client.handle_updates(updates)
+
+    assert len(client.enqueued) == 30
+
+    assert len(client.states) == 1, (
+        "each state write costs a thread hand-off into aiosqlite; only the "
+        f"highest pts of a batch matters, but {len(client.states)} were written"
+    )
+    assert client.states[0][1] == 30, (
+        f"the state kept must be the highest pts of the batch, got {client.states[0][1]}"
+    )
+
+
+async def test_a_small_packet_is_decrypted_without_a_thread(monkeypatch):
+    session = make_session()
+    session.connection = RecordingConnection()
+
+    body = raw.types.Pong(msg_id=1, ping_id=0).write()
+    hops = []
+
+    def unpack(*args, **kwargs):
+        return 3, 1, len(body), body, 32 + len(body)
+
+    monkeypatch.setattr(session_mod.warpcrypto, "unpack_message", unpack)
+
+    original = session.loop.run_in_executor
+
+    def counting(*args, **kwargs):
+        hops.append(args[1] if len(args) > 1 else None)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(session.loop, "run_in_executor", counting)
+
+    await session.handle_packet(b"\x00" * 512)
+
+    assert not hops, (
+        "a hand-off to the crypto pool costs a flat ~110us and a 512 byte packet "
+        "costs about one to decrypt, so small packets must not pay for a thread"
+    )
+
+
+async def test_a_transfer_sized_packet_still_uses_the_pool(monkeypatch):
+    session = make_session()
+    session.connection = RecordingConnection()
+
+    body = raw.types.Pong(msg_id=1, ping_id=0).write()
+    hops = []
+
+    def unpack(*args, **kwargs):
+        return 3, 1, len(body), body, 32 + len(body)
+
+    monkeypatch.setattr(session_mod.warpcrypto, "unpack_message", unpack)
+
+    async def counting(executor, fn, *args):
+        hops.append(fn)
+        return fn(*args)
+
+    monkeypatch.setattr(session.loop, "run_in_executor", counting)
+
+    await session.handle_packet(b"\x00" * (Session.INLINE_CRYPTO_MAX + 1))
+
+    assert hops, (
+        "a megabyte part would stall the event loop for milliseconds; above the "
+        "threshold the crypto pool is what keeps it off the loop"
+    )
+
+
+class _RefusingProtocol:
+    def __init__(self, *args, **kwargs):
+        self.closed = False
+
+    async def connect(self, address):
+        raise OSError("[Errno 111] Connect call failed")
+
+    async def close(self):
+        self.closed = True
+
+
+async def test_a_failed_connect_says_what_went_wrong(monkeypatch):
+    monkeypatch.setattr(Connection, "MAX_CONNECTION_ATTEMPTS", 2)
+
+    connection = Connection(2, False, False, None, protocol_factory=_RefusingProtocol)
+
+    with pytest.raises(OSError) as caught:
+        await connection.connect()
+
+    assert "Connect call failed" in str(caught.value), (
+        "the socket error that actually stopped the connection must survive; "
+        f"got {caught.value!r}"
+    )
+
+
+class _ClosingConnection:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def connect(self):
+        pass
+
+    async def close(self):
+        pass
+
+    async def send(self, data):
+        pass
+
+    async def recv(self):
+        return None
+
+
+async def test_auth_reports_a_closed_socket_as_a_connection_error(monkeypatch):
+    auth = Auth.__new__(Auth)
+    auth.connection = _ClosingConnection()
+
+    with pytest.raises(OSError) as caught:
+        await auth.invoke(raw.functions.ReqPqMulti(nonce=1))
+
+    assert not isinstance(caught.value, TypeError), (
+        "a server that hangs up during the auth handshake must not surface as a "
+        f"TypeError from BytesIO(None); got {caught.value!r}"
+    )
+
+
+async def test_auth_reports_a_transport_error_by_its_code(monkeypatch):
+    class _TransportError(_ClosingConnection):
+        async def recv(self):
+            return (-404).to_bytes(4, "little", signed=True)
+
+    auth = Auth.__new__(Auth)
+    auth.connection = _TransportError()
+
+    with pytest.raises(OSError) as caught:
+        await auth.invoke(raw.functions.ReqPqMulti(nonce=1))
+
+    assert "404" in str(caught.value), (
+        f"the transport error the server sent must reach the caller, got {caught.value!r}"
+    )
+
+
+class _BackgroundTasksWatchdogClient:
+    UPDATES_WATCHDOG_INTERVAL = 0.01
+    updates_watchdog = pyrogram.Client.updates_watchdog
+
+    def __init__(self, failure):
+        self.updates_watchdog_event = asyncio.Event()
+        self.last_update_time = datetime.now() - timedelta(days=1)
+        self._last_update_monotonic = time.monotonic() - 86400
+        self.failure = failure
+        self.calls = 0
+
+    async def invoke(self, query, **kwargs):
+        self.calls += 1
+        raise self.failure
+
+    async def recover_gaps(self):
+        return (0, 0)
+
+
+async def test_the_updates_watchdog_survives_a_failed_poll():
+    client = _BackgroundTasksWatchdogClient(TimeoutError("Request timed out"))
+
+    task = asyncio.ensure_future(client.updates_watchdog())
+    await asyncio.sleep(0.2)
+
+    try:
+        assert not task.done(), (
+            "one failed poll must not retire the watchdog for the life of the "
+            f"client; it died with {task.exception()!r}"
+        )
+        assert client.calls > 1, (
+            f"the watchdog must keep polling after a failure, it polled {client.calls} time(s)"
+        )
+    finally:
+        client.updates_watchdog_event.set()
+        await asyncio.wait_for(task, timeout=5)
+
+
+class _GapClient(RecoverGaps):
+    _save_update_state = pyrogram.Client._save_update_state
+
+    def __init__(self, error):
+        self._state_marks = {}
+        self.skip_updates = False
+        self.error = error
+        self.calls = 0
+        self.deleted = []
+
+        outer = self
+
+        class _Storage:
+            async def update_state(self, value=object):
+                if value is object:
+                    return [(-100123, 5, 0, 7, 1)]
+                if isinstance(value, int):
+                    outer.deleted.append(value)
+
+        self.storage = _Storage()
+
+    async def resolve_peer(self, peer_id):
+        return raw.types.InputChannel(channel_id=1, access_hash=0)
+
+    async def invoke(self, query, **kwargs):
+        self.calls += 1
+        await asyncio.sleep(0)
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        PersistentTimestampOutdated(500, "PERSISTENT_TIMESTAMP_OUTDATED"),
+        PersistentTimestampInvalid(400, "PERSISTENT_TIMESTAMP_INVALID"),
+    ],
+)
+async def test_gap_recovery_gives_up_instead_of_spinning(error):
+    client = _GapClient(error)
+
+    started = time.monotonic()
+    await asyncio.wait_for(client.recover_gaps(), timeout=10)
+    elapsed = time.monotonic() - started
+
+    assert client.calls < 10, (
+        "an unusable persistent timestamp is re-sent unchanged, so retrying it "
+        f"without a bound is a hot loop; it was sent {client.calls} times"
+    )
+    assert elapsed < 9
+
+
+class _HandlerlessClient:
+    listeners = None
+
+
+def test_registering_a_handler_outside_a_loop_leaves_no_coroutine_behind(recwarn):
+    dispatcher = Dispatcher(_HandlerlessClient())
+    handler = object()
+
+    dispatcher.add_handler(handler, 0)
+
+    assert dispatcher.groups == {0: [handler]}
+
+    dispatcher.remove_handler(handler, 0)
+
+    assert dispatcher.groups == {}
+
+    gc.collect()
+
+    unawaited = [w for w in recwarn.list if "never awaited" in str(w.message)]
+
+    assert not unawaited, (
+        "the coroutine must not be built before the loop it needs is known; "
+        f"got {[str(w.message) for w in unawaited]}"
+    )
+
+
+class _UnresolvableGapClient(RecoverGaps):
+    """One stored channel can no longer be resolved; the others still can."""
+
+    _save_update_state = pyrogram.Client._save_update_state
+
+    def __init__(self):
+        self._state_marks = {}
+        self.skip_updates = False
+        self.recovered = []
+        self.dropped = []
+
+        outer = self
+
+        class _Storage:
+            async def update_state(self, value=object):
+                if value is object:
+                    return [(-1001111111111, 5, 0, 7, 1), (-1002222222222, 5, 0, 7, 1)]
+                if isinstance(value, int):
+                    outer.dropped.append(value)
+
+        self.storage = _Storage()
+
+        class _Dispatcher:
+            async def enqueue_update(self, *args):
+                return True
+
+        self.dispatcher = _Dispatcher()
+
+    async def resolve_peer(self, peer_id):
+        if peer_id == -1001111111111:
+            raise PeerIdInvalid
+
+        return raw.types.InputChannel(channel_id=1, access_hash=0)
+
+    async def invoke(self, query, **kwargs):
+        self.recovered.append(query)
+        await asyncio.sleep(0)
+
+        return raw.types.updates.ChannelDifferenceEmpty(final=True, pts=9)
+
+
+async def test_one_unresolvable_peer_does_not_abort_gap_recovery():
+    client = _UnresolvableGapClient()
+
+    await asyncio.wait_for(client.recover_gaps(), timeout=10)
+
+    assert client.recovered, (
+        "a peer that can no longer be resolved must not stop the peers after it "
+        "from recovering - recover_gaps runs inside dispatcher.start(), so this "
+        "aborts start() and the client can never come up again"
+    )
+    assert -1001111111111 in client.dropped, (
+        "the state of a peer that cannot be resolved is unusable and must be "
+        "dropped, or every start repeats the same failure"
+    )
+
+
+class _Listeners:
+    def reopen(self):
+        pass
+
+
+class _FakeDispatcher:
+    def __init__(self, fail: bool):
+        self.fail = fail
+        self.started = False
+        self.stopped = False
+
+    async def start(self):
+        self.started = True
+
+        if self.fail:
+            raise RuntimeError("recover_gaps blew up")
+
+    async def stop(self, clear_handlers: bool = True):
+        self.stopped = True
+
+
+class _InitClient:
+    initialize = pyrogram.Client.initialize
+    updates_watchdog = pyrogram.Client.updates_watchdog
+    media_pool_reaper = pyrogram.Client.media_pool_reaper
+
+    UPDATES_WATCHDOG_INTERVAL = 60
+    MEDIA_SESSION_REAP_INTERVAL = 60
+
+    def __init__(self, fail: bool):
+        self.is_connected = True
+        self.is_initialized = False
+        self.listeners = _Listeners()
+        self.rate_limiter = None
+        self.dispatcher = _FakeDispatcher(fail)
+        self.updates_watchdog_task = None
+        self.updates_watchdog_event = asyncio.Event()
+        self.media_pool_reaper_task = None
+        self.media_pool_reaper_event = asyncio.Event()
+        self.plugins_loaded = False
+
+    def load_plugins(self):
+        self.plugins_loaded = True
+
+
+async def test_a_failed_initialize_takes_its_workers_with_it():
+    client = _InitClient(fail=True)
+
+    with pytest.raises(RuntimeError):
+        await client.initialize()
+
+    assert not client.is_initialized
+
+    assert client.dispatcher.stopped, (
+        "initialize left the dispatcher running with is_initialized still False, "
+        "so terminate() refuses to run and the handler workers block on the "
+        "update queue for the life of the process"
+    )
+
+    for task in (client.updates_watchdog_task, client.media_pool_reaper_task):
+        assert task is None or task.done(), (
+            "a background task started before the failure must not outlive it"
+        )
+
+
+class _StartClient:
+    start = pyrogram.Client.start
+
+    def __init__(self):
+        self.takeout = False
+        self.takeout_id = None
+        self.disconnected = False
+        self.me = None
+
+        class _Storage:
+            async def is_bot(self):
+                return True
+
+        self.storage = _Storage()
+
+    async def connect(self):
+        return True
+
+    async def invoke(self, query, **kwargs):
+        return None
+
+    async def get_me(self):
+        raise RuntimeError("the server hung up right after GetState")
+
+    async def initialize(self):
+        raise AssertionError("initialize should not be reached")
+
+    async def disconnect(self):
+        self.disconnected = True
+
+
+async def test_a_start_that_fails_late_still_disconnects():
+    client = _StartClient()
+
+    with pytest.raises(RuntimeError):
+        await client.start()
+
+    assert client.disconnected, (
+        "get_me and initialize sit outside the try that disconnects, so a failure "
+        "in either leaves a connected client the caller cannot clean up"
+    )
+
+
+class _NeverConnects:
+    attempts = 0
+
+    def __init__(self, *args, **kwargs):
+        _NeverConnects.attempts += 1
+
+    async def connect(self):
+        raise OSError("no route to host")
+
+    async def close(self):
+        pass
+
+
+async def test_an_unbounded_start_says_something_before_the_second_minute(monkeypatch, caplog):
+    _NeverConnects.attempts = 0
+    monkeypatch.setattr(SessionDummyClient, "connection_factory", _NeverConnects)
+
+    session = Session(
+        SessionDummyClient(), 1, b"\x00" * 256, False, is_media=False, crypto_executor=None
+    )
+
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(session_mod.asyncio, "sleep", lambda *_: real_sleep(0))
+
+    task = asyncio.ensure_future(session.start())
+
+    with caplog.at_level(logging.WARNING, logger="pyrogram.session.session"):
+        await real_sleep(0.3)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert any("retry" in r.message.lower() or "attempt" in r.message.lower()
+               for r in caplog.records), (
+        "an unbounded connect retries forever and logs only at debug, so a client "
+        f"that cannot reach Telegram looks hung with no output at all "
+        f"({_NeverConnects.attempts} attempts made silently)"
+    )

@@ -16,4 +16,29 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
 
-from .connection import Connection, transport_error
+from .connection import Connection, protocol_dc_id, transport_class_for, transport_error
+from .proxy import (
+    HTTPProxy,
+    MTProxy,
+    Proxy,
+    SOCKS4Proxy,
+    SOCKS5Proxy,
+    WebProxy,
+    client_proxy_address,
+    normalize_proxy,
+)
+
+__all__ = [
+    "Connection",
+    "HTTPProxy",
+    "MTProxy",
+    "Proxy",
+    "SOCKS4Proxy",
+    "SOCKS5Proxy",
+    "WebProxy",
+    "client_proxy_address",
+    "normalize_proxy",
+    "protocol_dc_id",
+    "transport_class_for",
+    "transport_error",
+]

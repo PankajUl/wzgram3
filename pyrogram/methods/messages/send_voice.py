@@ -41,6 +41,8 @@ class SendVoice:
         parse_mode: Optional["enums.ParseMode"] = None,
         caption_entities: Optional[List["types.MessageEntity"]] = None,
         duration: int = 0,
+        waveform: Optional[bytes] = None,
+        view_once: Optional[bool] = None,
         disable_notification: Optional[bool] = None,
         reply_to_message_id: Optional[int] = None,
         reply_to_chat_id: Optional[Union[int, str]] = None,
@@ -104,6 +106,14 @@ class SendVoice:
 
             duration (``int``, *optional*):
                 Duration of the voice message in seconds.
+
+            waveform (``bytes``, *optional*):
+                The waveform of the voice note, as a 5-bit byte string.
+
+            view_once (``bool``, *optional*):
+                Pass True if the voice note must be opened once and disappear afterwards.
+                Self-destructing media only works in private chats; a group or a
+                channel drops the timer.
 
             disable_notification (``bool``, *optional*):
                 Sends the message silently.
@@ -248,6 +258,8 @@ class SendVoice:
                     quote_entities=quote_entities,
                 )
 
+        ttl_seconds = (1 << 31) - 1 if view_once else None
+
         file = None
 
         try:
@@ -260,16 +272,21 @@ class SendVoice:
                         attributes=[
                             raw.types.DocumentAttributeAudio(
                                 voice=True,
-                                duration=duration
+                                duration=duration,
+                                waveform=waveform
                             )
-                        ]
+                        ],
+                        ttl_seconds=ttl_seconds
                     )
                 elif re.match("^https?://", voice):
                     media = raw.types.InputMediaDocumentExternal(
-                        url=voice
+                        url=voice,
+                        ttl_seconds=ttl_seconds
                     )
                 else:
-                    media = utils.get_input_media_from_file_id(voice, FileType.VOICE)
+                    media = utils.get_input_media_from_file_id(
+                        voice, FileType.VOICE, ttl_seconds=ttl_seconds
+                    )
             else:
                 file = await self.save_file(voice, progress=progress, progress_args=progress_args)
                 media = raw.types.InputMediaUploadedDocument(
@@ -280,9 +297,11 @@ class SendVoice:
                     attributes=[
                         raw.types.DocumentAttributeAudio(
                             voice=True,
-                            duration=duration
+                            duration=duration,
+                            waveform=waveform
                         )
-                    ]
+                    ],
+                    ttl_seconds=ttl_seconds
                 )
 
             while True:
@@ -327,12 +346,15 @@ class SendVoice:
                         if isinstance(i, (raw.types.UpdateNewMessage,
                                           raw.types.UpdateNewChannelMessage,
                                           raw.types.UpdateNewScheduledMessage,
-                                          raw.types.UpdateNewEphemeralMessage)):
+                                          raw.types.UpdateNewEphemeralMessage,
+                                          raw.types.UpdateBotNewBusinessMessage)):
                             return await types.Message._parse(
                                 self, i.message,
                                 {i.id: i for i in r.users},
                                 {i.id: i for i in r.chats},
-                                is_scheduled=isinstance(i, raw.types.UpdateNewScheduledMessage)
+                                is_scheduled=isinstance(i, raw.types.UpdateNewScheduledMessage),
+                                business_connection_id=getattr(i, "connection_id", None),
+                                raw_reply_to_message=getattr(i, "reply_to_message", None)
                             )
 
                     # a send that succeeded is never re-sent, whatever the answer carried

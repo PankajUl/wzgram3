@@ -12,7 +12,7 @@ class EditMessageText:
         self: "pyrogram.Client",
         chat_id: Union[int, str],
         message_id: int,
-        text: str,
+        text: Optional[str] = None,
         parse_mode: Optional["enums.ParseMode"] = None,
         entities: Optional[List["types.MessageEntity"]] = None,
         link_preview_options: Optional["types.LinkPreviewOptions"] = None,
@@ -22,7 +22,7 @@ class EditMessageText:
         rich_text: Optional[Union[str, "types.InputRichMessage"]] = None,
         rich_text_parse_mode: "enums.ParseMode" = enums.ParseMode.MARKDOWN,
         rich_text_media: Optional[List["types.InputRichMessageMedia"]] = None,
-        reply_markup: Optional["types.InlineKeyboardMarkup"] = None,
+        reply_markup: Union["types.InlineKeyboardMarkup", type[object], None] = object,
         schedule_date: Optional[datetime] = None,
         repeat_period: Optional[int] = None,
         quick_reply_shortcut: Optional[int] = None,
@@ -76,6 +76,7 @@ class EditMessageText:
 
             reply_markup (:obj:`~pyrogram.types.InlineKeyboardMarkup`, *optional*):
                 An inline keyboard for the message.
+                Pass None to remove the existing reply markup.
 
             schedule_date (:py:obj:`~datetime.datetime`, *optional*):
                 New date when the scheduled message will be sent.
@@ -95,6 +96,9 @@ class EditMessageText:
                 # Edit a message text
                 await app.edit_message_text(chat_id, message_id, "New text")
         """
+        if text is None and rich_text is None:
+            raise ValueError("Either text or rich_text must be given")
+
         if link_preview_options is None:
             link_preview_options = self.link_preview_options
 
@@ -113,18 +117,12 @@ class EditMessageText:
         invert_media = invert_media if invert_media is not None else (show_caption_above_media if show_caption_above_media is not None else None)
 
         if rich_text is not None:
-            if isinstance(rich_text, types.InputRichMessage):
-                rich_msg = rich_text.write()
-            else:
-                files = types.InputRichMessage(
-                    html="_", media=rich_text_media
-                ).write_files() if rich_text_media else None
-
-                if rich_text_parse_mode == enums.ParseMode.HTML:
-                    rich_msg = raw.types.InputRichMessageHTML(html=rich_text, files=files)
-                else:
-                    rich_msg = raw.types.InputRichMessageMarkdown(markdown=rich_text, files=files)
-            text_params = {"message": "", "rich_message": rich_msg}
+            text_params = {
+                "message": "",
+                "rich_message": await utils.build_input_rich_message(
+                    self, rich_text, rich_text_parse_mode, rich_text_media, chat_id
+                )
+            }
         else:
             text_params = await utils.parse_text_entities(self, text, parse_mode, entities)
 
@@ -142,8 +140,8 @@ class EditMessageText:
                     force_large_media=link_preview_options.prefer_large_media,
                     force_small_media=link_preview_options.prefer_small_media,
                     optional=True
-                ) if link_preview_options is not None and link_preview_options.url else None,
-                reply_markup=await reply_markup.write(self) if reply_markup else None,
+                ) if link_preview_options is not None and link_preview_options.url and not no_webpage else None,
+                reply_markup=await utils.write_edit_reply_markup(self, reply_markup=reply_markup),
                 **text_params
             ),
             sleep_threshold=60,
@@ -151,9 +149,15 @@ class EditMessageText:
         )
 
         for i in r.updates:
-            if isinstance(i, (raw.types.UpdateEditMessage, raw.types.UpdateEditChannelMessage, raw.types.UpdateEditEphemeralMessage)):
+            if isinstance(i, (raw.types.UpdateEditMessage, raw.types.UpdateEditChannelMessage, raw.types.UpdateEditEphemeralMessage,
+                              raw.types.UpdateNewScheduledMessage,
+                              raw.types.UpdateBotEditBusinessMessage,
+                              raw.types.UpdateBotNewBusinessMessage)):
                 return await types.Message._parse(
                     self, i.message,
                     {i.id: i for i in r.users},
-                    {i.id: i for i in r.chats}
+                    {i.id: i for i in r.chats},
+                    is_scheduled=isinstance(i, raw.types.UpdateNewScheduledMessage),
+                    business_connection_id=getattr(i, "connection_id", None),
+                    raw_reply_to_message=getattr(i, "reply_to_message", None)
                 )

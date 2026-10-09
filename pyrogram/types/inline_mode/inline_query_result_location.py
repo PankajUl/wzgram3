@@ -88,7 +88,7 @@ class InlineQueryResultLocation(InlineQueryResult):
         thumb_width: int = 0,
         thumb_height: int = 0
     ):
-        super().__init__("location", id, input_message_content, reply_markup)
+        super().__init__("geo", id, input_message_content, reply_markup)
 
         self.title = title
         self.latitude = latitude

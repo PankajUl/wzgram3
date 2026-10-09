@@ -39,6 +39,7 @@ class SendVideoNote:
         duration: int = 0,
         length: int = 1,
         thumb: Optional[Union[str, BinaryIO]] = None,
+        view_once: Optional[bool] = None,
         disable_notification: Optional[bool] = None,
         reply_to_message_id: Optional[int] = None,
         reply_to_chat_id: Optional[Union[int, str]] = None,
@@ -101,6 +102,11 @@ class SendVideoNote:
                 The thumbnail should be in JPEG format and less than 200 KB in size.
                 A thumbnail's width and height should not exceed 320 pixels.
                 Thumbnails can't be reused and can be only uploaded as a new file.
+
+            view_once (``bool``, *optional*):
+                Pass True if the video note must be opened once and disappear afterwards.
+                Self-destructing media only works in private chats; a group or a
+                channel drops the timer.
 
             disable_notification (``bool``, *optional*):
                 Sends the message silently.
@@ -243,6 +249,8 @@ class SendVideoNote:
                     quote_entities=quote_entities,
                 )
 
+        ttl_seconds = (1 << 31) - 1 if view_once else None
+
         file = None
 
         try:
@@ -261,10 +269,13 @@ class SendVideoNote:
                                 w=length,
                                 h=length
                             )
-                        ]
+                        ],
+                        ttl_seconds=ttl_seconds
                     )
                 else:
-                    media = utils.get_input_media_from_file_id(video_note, FileType.VIDEO_NOTE)
+                    media = utils.get_input_media_from_file_id(
+                        video_note, FileType.VIDEO_NOTE, ttl_seconds=ttl_seconds
+                    )
             else:
                 thumb = await self.save_file(thumb)
                 file = await self.save_file(video_note, progress=progress, progress_args=progress_args)
@@ -281,7 +292,8 @@ class SendVideoNote:
                             w=length,
                             h=length
                         )
-                    ]
+                    ],
+                    ttl_seconds=ttl_seconds
                 )
 
             while True:
@@ -326,12 +338,15 @@ class SendVideoNote:
                         if isinstance(i, (raw.types.UpdateNewMessage,
                                           raw.types.UpdateNewChannelMessage,
                                           raw.types.UpdateNewScheduledMessage,
-                                          raw.types.UpdateNewEphemeralMessage)):
+                                          raw.types.UpdateNewEphemeralMessage,
+                                          raw.types.UpdateBotNewBusinessMessage)):
                             return await types.Message._parse(
                                 self, i.message,
                                 {i.id: i for i in r.users},
                                 {i.id: i for i in r.chats},
-                                is_scheduled=isinstance(i, raw.types.UpdateNewScheduledMessage)
+                                is_scheduled=isinstance(i, raw.types.UpdateNewScheduledMessage),
+                                business_connection_id=getattr(i, "connection_id", None),
+                                raw_reply_to_message=getattr(i, "reply_to_message", None)
                             )
 
                     # a send that succeeded is never re-sent, whatever the answer carried

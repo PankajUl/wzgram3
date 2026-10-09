@@ -64,7 +64,7 @@ class RichMessage(Object):
             photos = {photo.id: photo for photo in rich_message.photos}
             documents = {document.id: document for document in rich_message.documents}
 
-            return RichMessage(
+            parsed = RichMessage(
                 blocks=types.List(
                     [
                         await types.RichBlock._parse(
@@ -81,4 +81,45 @@ class RichMessage(Object):
                 is_rtl=rich_message.rtl,
                 is_partial=rich_message.part,
             )
+            parsed._raw = rich_message
+            parsed._users = [
+                raw.types.InputUser(user_id=user.id, access_hash=user.access_hash)
+                for user in (users.get(i) for i in _mentioned_user_ids(rich_message.blocks))
+                if isinstance(user, raw.types.User) and user.access_hash is not None
+            ]
+            return parsed
+
+    def _write(self) -> "raw.types.InputRichMessage":
+        if getattr(self, "_raw", None) is None:
+            raise ValueError("Only a received rich message can be sent again")
+
+        return raw.types.InputRichMessage(
+            blocks=self._raw.blocks,
+            rtl=self._raw.rtl,
+            photos=[
+                raw.types.InputPhoto(id=p.id, access_hash=p.access_hash, file_reference=p.file_reference)
+                for p in self._raw.photos
+            ] or None,
+            documents=[
+                raw.types.InputDocument(id=d.id, access_hash=d.access_hash, file_reference=d.file_reference)
+                for d in self._raw.documents
+            ] or None,
+            users=self._users or None,
+        )
+
+
+def _mentioned_user_ids(obj, found=None) -> set:
+    found = set() if found is None else found
+
+    if isinstance(obj, raw.types.TextMentionName):
+        found.add(obj.user_id)
+
+    if isinstance(obj, list):
+        for item in obj:
+            _mentioned_user_ids(item, found)
+    elif isinstance(obj, raw.core.TLObject):
+        for name in obj.__slots__:
+            _mentioned_user_ids(getattr(obj, name), found)
+
+    return found
 

@@ -37,7 +37,7 @@ from importlib import import_module
 from io import BytesIO, StringIO
 from mimetypes import MimeTypes
 from pathlib import Path
-from typing import AsyncGenerator, Callable, List, Optional, Type, Union
+from typing import Any, AsyncGenerator, Callable, List, Optional, Type, Union
 
 import pyrogram
 from pyrogram import __license__, __version__, enums, raw, utils
@@ -59,14 +59,15 @@ from pyrogram.errors import (
 )
 from pyrogram.handlers.handler import Handler
 from pyrogram.methods import Methods
-from pyrogram.methods.rate_limiter import TokenBucket
+from pyrogram.methods.rate_limiter import AdaptiveBucket, TokenBucket
 from pyrogram.qrlogin import QRLogin
 from pyrogram.session import Auth, Session
 from pyrogram.storage import SQLiteStorage, Storage
 from pyrogram.types import LinkPreviewOptions, ListenerRegistry, TermsOfService, User
 from pyrogram.utils import ainput
 
-from .connection import Connection
+from .connection import Connection, Proxy
+from .connection.proxy import ProxyDict, normalize_proxy
 from .connection.transport import TCP, TCPAbridged
 from .dispatcher import Dispatcher
 from .file_id import FileId, FileType, ThumbnailSource
@@ -75,6 +76,25 @@ from .parser import Parser
 from .session.internals import MsgId
 
 log = logging.getLogger(__name__)
+
+
+def _plugin_handlers(target: Any) -> Optional[List[tuple]]:
+    try:
+        handlers = target.handlers
+
+        if not isinstance(handlers, (list, tuple)):
+            return None
+
+        pairs = list(handlers)
+    except Exception:
+        return None
+
+    for pair in pairs:
+        if not (isinstance(pair, (tuple, list)) and len(pair) == 2 and isinstance(pair[0], Handler)):
+            return None
+
+    return pairs
+
 
 _handler_executor: Optional[ThreadPoolExecutor] = None
 
@@ -166,7 +186,7 @@ def write_at(fd: int, data: bytes, offset: int) -> None:
 
 
 class Client(Methods):
-    """Pyrogram Client, the main means for interacting with Telegram.
+    """wzgram Client, the main means for interacting with Telegram.
 
     Parameters:
         name (``str``):
@@ -182,7 +202,7 @@ class Client(Methods):
 
         app_version (``str``, *optional*):
             Application version.
-            Defaults to "Pyrogram x.y.z".
+            Defaults to "wzgram x.y.z".
 
         device_model (``str``, *optional*):
             Device model.
@@ -211,11 +231,23 @@ class Client(Methods):
             after which the server address will be updated (works both ways).
             Defaults to False (IPv4).
 
-        proxy (``dict``, *optional*):
-            The Proxy settings as dict.
-            E.g.: *dict(scheme="socks5", hostname="11.22.33.44", port=1234, username="user", password="pass")*.
-            The *scheme* can be "socks4", "socks5" or "http" and defaults to "socks5".
+        proxy (``str`` | ``dict`` | :obj:`~pyrogram.connection.Proxy`, *optional*):
+            The Proxy settings as a url, a dict, or one of the
+            :obj:`~pyrogram.connection.Proxy` dataclasses.
+            E.g.: *dict(scheme="socks5", hostname="11.22.33.44", port=1234, username="user", password="pass")*
+            or *"http://11.22.33.44:1234"* or *"socks5://user:pass@11.22.33.44:1234"* or
+            *"tg://socks?server=11.22.33.44&port=1234"*.
+            The *scheme* can be "socks4", "socks5", "http", "mtproxy" or "web".
             The *username* and *password* can be omitted if the proxy doesn't require authorization.
+            A WEB proxy takes *dict(scheme="web", hostname="relay.example.com", secret="...")* and a
+            classic MTProxy *dict(scheme="mtproxy", hostname="11.22.33.44", port=443, secret="...")*
+            or its ordinary share link *"tg://proxy?server=11.22.33.44&port=443&secret=..."*. A
+            secret is read as hex, base64url or base64. The mtproxy scheme also takes an ee-prefixed
+            secret, which appends the domain the connection then imitates a TLS session with;
+            the web scheme cannot, because the relay speaks obfuscated2 to its own MTProxy and
+            never adds the TLS record layer. A secret longer than 16 bytes - dd-prefixed or
+            ee-prefixed - asks for random padding, and the transport that sends it is picked
+            from the secret, so *proxy* is the only argument either scheme needs.
 
         test_mode (``bool``, *optional*):
             Enable or disable login to the test servers.
@@ -255,7 +287,7 @@ class Client(Methods):
 
         workdir (``str``, *optional*):
             Define a custom working directory.
-            The working directory is the location in the filesystem where Pyrogram will store the session files.
+            The working directory is the location in the filesystem where wzgram will store the session files.
             Defaults to the parent directory of the main script.
 
         plugins (``dict``, *optional*):
@@ -274,6 +306,7 @@ class Client(Methods):
         skip_updates (``bool``, *optional*):
             Pass True to skip pending updates that arrived while the client was offline.
             Doesn't work if *in_memory* is set to True.
+            Skipped updates can still be fetched on demand with :meth:`~pyrogram.Client.recover_gaps`.
             Defaults to True.
 
         takeout (``bool``, *optional*):
@@ -376,7 +409,7 @@ class Client(Methods):
             Defaults to True.
     """
 
-    APP_VERSION = f"Pyrogram {__version__}"
+    APP_VERSION = f"wzgram {__version__}"
     DEVICE_MODEL = f"{platform.python_implementation()} {platform.python_version()}"
     SYSTEM_VERSION = f"{platform.system()} {platform.release()}"
 
@@ -437,7 +470,7 @@ class Client(Methods):
         lang_code: str = LANG_CODE,
         system_lang_code: str = SYSTEM_LANG_CODE,
         ipv6: Optional[bool] = False,
-        proxy: Optional[dict] = None,
+        proxy: Optional[Union[str, ProxyDict, Proxy]] = None,
         test_mode: Optional[bool] = False,
         bot_token: Optional[str] = None,
         session_string: Optional[str] = None,
@@ -598,6 +631,8 @@ class Client(Methods):
         self.updates_watchdog_event = asyncio.Event()
         self.last_update_time = datetime.now()
         self._last_update_monotonic = time.monotonic()
+        self._state_marks = {}
+        self._recovering = set()
 
         self.media_pool_reaper_task = None
         self.media_pool_reaper_event = asyncio.Event()
@@ -608,6 +643,14 @@ class Client(Methods):
             self.loop = None
 
         self.__config: "raw.types.Config" = None
+
+    @property
+    def proxy(self) -> Optional[Proxy]:
+        return self._proxy
+
+    @proxy.setter
+    def proxy(self, value: Optional[Union[str, ProxyDict, Proxy]]) -> None:
+        self._proxy = normalize_proxy(value)
 
     @property
     def read_ahead_slots(self) -> asyncio.Semaphore:
@@ -652,7 +695,9 @@ class Client(Methods):
             if idle > self.UPDATES_WATCHDOG_INTERVAL:
                 try:
                     await self.invoke(raw.functions.updates.GetState())
-                    await self.recover_gaps()
+
+                    if not self.skip_updates:
+                        await self.recover_gaps()
                 except Exception:
                     log.exception("Updates watchdog poll failed")
 
@@ -675,7 +720,7 @@ class Client(Methods):
                 log.exception("Media session reaper failed")
 
     async def reap_media_sessions(self, idle_timeout: Optional[int] = None) -> int:
-        """Stop pooled media sessions unused for longer than *idle_timeout* seconds."""
+        """Stop pooled and per-DC sessions unused for longer than *idle_timeout* seconds; the main session is never stopped."""
         if idle_timeout is None:
             idle_timeout = self.MEDIA_SESSION_IDLE_TIMEOUT
 
@@ -705,6 +750,30 @@ class Client(Methods):
                     self.media_session_pools[dc_id] = keep
                 else:
                     self.media_session_pools.pop(dc_id, None)
+
+        for sessions, is_media in ((self.media_sessions, True), (self.sessions, False)):
+            for dc_id, session in list(sessions.items()):
+                if session is self.session:
+                    continue
+
+                lock = self._session_locks.setdefault((dc_id, is_media), asyncio.Lock())
+
+                async with lock:
+                    if (
+                        sessions.get(dc_id) is not session
+                        or session.results
+                        or now - session.last_used < idle_timeout
+                    ):
+                        continue
+
+                    sessions.pop(dc_id, None)
+
+                    try:
+                        await session.stop()
+                    except Exception:
+                        log.exception("Error stopping idle media session")
+
+                    reaped += 1
 
         if reaped:
             log.info("Reaped %s idle media session(s)", reaped)
@@ -797,7 +866,7 @@ class Client(Methods):
                             # TODO: Call raw.functions.auth.CheckPaidAuth (requires premium payment support)
                             raise Unauthorized(
                                 f"You need to pay {email_sent_code.sent_code.amount}{email_sent_code.sent_code.currency} or purchase premium to continue authorization "
-                                "process, which is currently not supported by Pyrogram."
+                                "process, which is currently not supported by wzgram."
                             )
                 except BadRequest as e:
                     print(e.MESSAGE)
@@ -899,8 +968,8 @@ class Client(Methods):
             try:
                 print(
                     "\x1b[2J\n"
-                    f"Welcome to Pyrogram (version {__version__})\n"
-                    "Pyrogram is free software and comes with ABSOLUTELY NO WARRANTY. Licensed\n"
+                    f"Welcome to wzgram (version {__version__})\n"
+                    "wzgram is free software and comes with ABSOLUTELY NO WARRANTY. Licensed\n"
                     f"under the terms of the {__license__}.\n"
                     "Scan the QR code below to login\n"
                     "Settings -> Privacy and Security -> Active Sessions -> Scan QR Code.",
@@ -1053,6 +1122,31 @@ class Client(Methods):
 
         return is_min
 
+    async def _save_update_state(self, state):
+        if isinstance(state, int):
+            self._state_marks.pop(state, None)
+            await self.storage.update_state(state)
+            return
+
+        state_id, pts, qts = state[:3]
+        known_pts, known_qts = self._state_marks.get(state_id, (None, None))
+
+        if pts is not None and known_pts is not None and pts < known_pts:
+            pts = None
+
+        if qts is not None and known_qts is not None and qts < known_qts:
+            qts = None
+
+        if pts is None and qts is None and (state[1] is not None or state[2] is not None):
+            return
+
+        self._state_marks[state_id] = (
+            known_pts if pts is None else pts,
+            known_qts if qts is None else qts,
+        )
+
+        await self.storage.update_state((state_id, pts, qts) + tuple(state[3:]))
+
     async def handle_updates(self, updates):
         # the datetime is what callers read; the watchdog measures a duration and
         # a host clock that steps backwards must not stall it for the step
@@ -1071,6 +1165,7 @@ class Client(Methods):
             # one write per peer per batch rather than per update: each costs a
             # thread hand-off into aiosqlite, and only the highest pts matters
             pending_states = {}
+            too_long = {}
 
             for update in updates.updates:
                 channel_id = getattr(
@@ -1083,16 +1178,22 @@ class Client(Methods):
 
                 pts = getattr(update, "pts", None)
                 pts_count = getattr(update, "pts_count", None)
-
-                if pts:
-                    key = utils.get_channel_id(channel_id) if channel_id else 0
-                    known = pending_states.get(key)
-
-                    if known is None or pts > known[1]:
-                        pending_states[key] = (key, pts, None, updates.date, updates.seq)
+                qts = getattr(update, "qts", None)
 
                 if isinstance(update, raw.types.UpdateChannelTooLong):
-                    log.info(update)
+                    too_long[utils.get_channel_id(channel_id)] = pts
+                elif pts:
+                    key = utils.get_channel_id(channel_id) if channel_id else 0
+                    known = pending_states.get(key, (key, None, None, updates.date, updates.seq))
+
+                    if known[1] is None or pts > known[1]:
+                        pending_states[key] = (key, pts) + known[2:]
+
+                if qts:
+                    known = pending_states.get(0, (0, None, None, updates.date, updates.seq))
+
+                    if known[2] is None or qts > known[2]:
+                        pending_states[0] = known[:2] + (qts,) + known[3:]
 
                 if isinstance(update, raw.types.UpdateNewChannelMessage) and is_min:
                     message = update.message
@@ -1117,15 +1218,20 @@ class Client(Methods):
                             pass
                         else:
                             if not isinstance(diff, raw.types.updates.ChannelDifferenceEmpty):
+                                await self.fetch_peers(diff.users)
+                                await self.fetch_peers(diff.chats)
                                 users.update({u.id: u for u in diff.users})
                                 chats.update({c.id: c for c in diff.chats})
 
                 await self.dispatcher.enqueue_update(update, users, chats)
 
             for state in pending_states.values():
-                await self.storage.update_state(state)
+                await self._save_update_state(state)
+
+            for key, pts in too_long.items():
+                self._recover_too_long(key, pts)
         elif isinstance(updates, (raw.types.UpdateShortMessage, raw.types.UpdateShortChatMessage)):
-            await self.storage.update_state(
+            await self._save_update_state(
                 (
                     0,
                     updates.pts,
@@ -1158,10 +1264,42 @@ class Client(Methods):
                     await self.dispatcher.enqueue_update(diff.other_updates[0], {}, {})
         elif isinstance(updates, raw.types.UpdateShort):
             await self.dispatcher.enqueue_update(updates.update, {}, {})
+
+            qts = getattr(updates.update, "qts", None)
+
+            if qts:
+                await self._save_update_state((0, None, qts, updates.date, None))
         elif isinstance(updates, raw.types.UpdatesTooLong):
-            log.info(updates)
+            self._recover_too_long(0, None)
+
+    def _recover_too_long(self, key, pts):
+        if key in self._recovering:
+            return
+
+        known_pts = self._state_marks.get(key, (None, None))[0]
+
+        if pts is not None and known_pts is not None and known_pts >= pts:
+            return
+
+        self._recovering.add(key)
+        utils.run_in_background(self._recover_too_long_state(key, pts), self.loop)
+
+    async def _recover_too_long_state(self, key, pts):
+        try:
+            if key in self._state_marks:
+                await self.recover_gaps(key)
+            elif key == 0:
+                state = await self.invoke(raw.functions.updates.GetState())
+                await self._save_update_state((0, state.pts, state.qts, state.date, state.seq))
+            elif pts is not None:
+                await self._save_update_state((key, pts, None, None, None))
+        except Exception:
+            log.exception("Recovery after too long update failed for %s", key)
+        finally:
+            self._recovering.discard(key)
 
     async def load_session(self):
+        self._state_marks = {}
         await self.storage.open()
 
         session_empty = any([
@@ -1251,19 +1389,19 @@ class Client(Methods):
                     module_path = '.'.join(path.parent.parts + (path.stem,))
                     module = import_module(module_path)
 
-                    for name in vars(module).keys():
-                        # noinspection PyBroadException
-                        try:
-                            for handler, group in getattr(module, name).handlers:
-                                if isinstance(handler, Handler) and isinstance(group, int):
-                                    self.add_handler(handler, group)
+                    for name in list(vars(module)):
+                        for handler, group in _plugin_handlers(getattr(module, name)) or ():
+                            if not isinstance(group, int):
+                                log.warning('[%s] [LOAD] Ignoring %s("%s") from "%s": the group must be an int, got %r',
+                                            self.name, type(handler).__name__, name, module_path, group)
+                                continue
 
-                                    log.info('[{}] [LOAD] {}("{}") in group {} from "{}"'.format(
-                                        self.name, type(handler).__name__, name, group, module_path))
+                            self.add_handler(handler, group)
 
-                                    count += 1
-                        except Exception:
-                            pass
+                            log.info('[{}] [LOAD] {}("{}") in group {} from "{}"'.format(
+                                self.name, type(handler).__name__, name, group, module_path))
+
+                            count += 1
             else:
                 for path, handlers in include:
                     module_path = root + "." + path
@@ -1283,21 +1421,27 @@ class Client(Methods):
                         handlers = vars(module).keys()
                         warn_non_existent_functions = False
 
-                    for name in handlers:
-                        # noinspection PyBroadException
-                        try:
-                            for handler, group in getattr(module, name).handlers:
-                                if isinstance(handler, Handler) and isinstance(group, int):
-                                    self.add_handler(handler, group)
+                    for name in list(handlers):
+                        pairs = _plugin_handlers(getattr(module, name, None))
 
-                                    log.info('[{}] [LOAD] {}("{}") in group {} from "{}"'.format(
-                                        self.name, type(handler).__name__, name, group, module_path))
-
-                                    count += 1
-                        except Exception:
+                        if pairs is None:
                             if warn_non_existent_functions:
                                 log.warning('[{}] [LOAD] Ignoring non-existent function "{}" from "{}"'.format(
                                     self.name, name, module_path))
+                            continue
+
+                        for handler, group in pairs:
+                            if not isinstance(group, int):
+                                log.warning('[%s] [LOAD] Ignoring %s("%s") from "%s": the group must be an int, got %r',
+                                            self.name, type(handler).__name__, name, module_path, group)
+                                continue
+
+                            self.add_handler(handler, group)
+
+                            log.info('[{}] [LOAD] {}("{}") in group {} from "{}"'.format(
+                                self.name, type(handler).__name__, name, group, module_path))
+
+                            count += 1
 
             if exclude:
                 for path, handlers in exclude:
@@ -1318,21 +1462,25 @@ class Client(Methods):
                         handlers = vars(module).keys()
                         warn_non_existent_functions = False
 
-                    for name in handlers:
-                        # noinspection PyBroadException
-                        try:
-                            for handler, group in getattr(module, name).handlers:
-                                if isinstance(handler, Handler) and isinstance(group, int):
-                                    self.remove_handler(handler, group)
+                    for name in list(handlers):
+                        pairs = _plugin_handlers(getattr(module, name, None))
 
-                                    log.info('[{}] [UNLOAD] {}("{}") from group {} in "{}"'.format(
-                                        self.name, type(handler).__name__, name, group, module_path))
-
-                                    count -= 1
-                        except Exception:
+                        if pairs is None:
                             if warn_non_existent_functions:
                                 log.warning('[{}] [UNLOAD] Ignoring non-existent function "{}" from "{}"'.format(
                                     self.name, name, module_path))
+                            continue
+
+                        for handler, group in pairs:
+                            if not isinstance(group, int):
+                                continue
+
+                            self.remove_handler(handler, group)
+
+                            log.info('[{}] [UNLOAD] {}("{}") from group {} in "{}"'.format(
+                                self.name, type(handler).__name__, name, group, module_path))
+
+                            count -= 1
 
             if count > 0:
                 log.info('[{}] Successfully loaded {} plugin{} from "{}"'.format(
@@ -1405,7 +1553,10 @@ class Client(Methods):
                 location = raw.types.InputPeerPhotoFileLocation(
                     peer=peer,
                     photo_id=file_id.media_id,
-                    big=file_id.thumbnail_source == ThumbnailSource.CHAT_PHOTO_BIG
+                    big=file_id.thumbnail_source in (
+                        ThumbnailSource.CHAT_PHOTO_BIG,
+                        ThumbnailSource.CHAT_PHOTO_BIG_LEGACY
+                    )
                 )
             elif file_type == FileType.PHOTO:
                 location = raw.types.InputPhotoFileLocation(
@@ -1427,14 +1578,24 @@ class Client(Methods):
             chunk_size = 1024 * 1024
             offset_bytes = abs(offset) * chunk_size
             _last_progress_time = 0.0
+            _last_reported = -1
 
             async def _report(sent: int) -> None:
+                nonlocal _last_reported
+
                 if not progress:
                     return
 
+                sent = min(sent, file_size) if file_size else sent
+
+                if sent == _last_reported:
+                    return
+
+                _last_reported = sent
+
                 func = functools.partial(
                     progress,
-                    min(sent, file_size) if file_size else sent,
+                    sent,
                     file_size,
                     *progress_args
                 )
@@ -1459,8 +1620,8 @@ class Client(Methods):
                 if _is_bot:
                     dl_pool_size = int(os.environ.get("WZGRAM_DL_POOL_BOT", 5))
                     dl_workers_per_session = int(os.environ.get("WZGRAM_DL_WORKERS_BOT", 3))
-                    dl_rate = int(os.environ.get("WZGRAM_DL_RATE_BOT", 100))
-                    dl_burst = int(os.environ.get("WZGRAM_DL_BURST_BOT", 25))
+                    dl_rate = int(os.environ.get("WZGRAM_DL_RATE_BOT", 16))
+                    dl_burst = int(os.environ.get("WZGRAM_DL_BURST_BOT", 8))
                 elif _is_premium:
                     dl_pool_size = int(os.environ.get("WZGRAM_DL_POOL_PREMIUM", 6))
                     dl_workers_per_session = int(os.environ.get("WZGRAM_DL_WORKERS_PREMIUM", 4))
@@ -1469,8 +1630,8 @@ class Client(Methods):
                 else:
                     dl_pool_size = int(os.environ.get("WZGRAM_DL_POOL_USER", 5))
                     dl_workers_per_session = int(os.environ.get("WZGRAM_DL_WORKERS_USER", 3))
-                    dl_rate = int(os.environ.get("WZGRAM_DL_RATE_USER", 100))
-                    dl_burst = int(os.environ.get("WZGRAM_DL_BURST_USER", 25))
+                    dl_rate = int(os.environ.get("WZGRAM_DL_RATE_USER", 8))
+                    dl_burst = int(os.environ.get("WZGRAM_DL_BURST_USER", 8))
 
                 total_chunks = math.ceil((file_size - offset_bytes) / chunk_size)
                 pool_size = min(dl_pool_size, total_chunks)
@@ -1482,32 +1643,177 @@ class Client(Methods):
 
                 session = await self.get_session(dc_id, is_media=True)
 
-                r = await session.invoke(
-                    raw.functions.upload.GetFile(
-                        location=location,
-                        offset=offset_bytes,
-                        limit=chunk_size
-                    ),
-                    timeout=Session.MEDIA_WAIT_TIMEOUT,
-                    sleep_threshold=30
+                _write_mode = _write_file is not None and file_size > 0
+                _write_fd = _write_file.fileno() if _write_mode else -1
+                data_ready = asyncio.Event()
+                buffer_slots = ReadAhead(self.read_ahead_slots)
+                received = {}
+                work = asyncio.Queue()
+                tasks = []
+                _done_count = 0
+                _total_chunks = 0
+                _getfile_rate = AdaptiveBucket(
+                    rate=dl_rate, ceiling=max(dl_rate, 150), burst=dl_burst
                 )
+
+                async def _worker(session):
+                    nonlocal _done_count
+                    while True:
+                        await buffer_slots.acquire()
+
+                        try:
+                            offset = work.get_nowait()
+                        except asyncio.QueueEmpty:
+                            buffer_slots.release()
+                            return
+
+                        try:
+                            slept = 0.0
+
+                            while True:
+                                await _getfile_rate.acquire()
+
+                                try:
+                                    r = await session.invoke(
+                                        raw.functions.upload.GetFile(
+                                            location=location,
+                                            offset=offset,
+                                            limit=chunk_size,
+                                        ),
+                                        timeout=Session.MEDIA_WAIT_TIMEOUT,
+                                        sleep_threshold=0,
+                                    )
+                                    break
+                                except (FloodWait, FloodPremiumWait) as e:
+                                    amount = e.value
+
+                                    if amount > 30 or slept + amount > 30 * Session.MAX_RETRIES:
+                                        raise
+
+                                    slept += amount
+                                    _getfile_rate.on_flood()
+                                    log.warning(
+                                        '[%s] Waiting for %s seconds before continuing (required by "upload.GetFile")',
+                                        self.name, amount,
+                                    )
+                                    await asyncio.sleep(amount)
+                        except BaseException:
+                            buffer_slots.release()
+                            raise
+
+                        _getfile_rate.on_success()
+                        chunk_data = r.bytes
+                        r = None
+
+                        if _write_mode:
+                            write_at(_write_fd, chunk_data, offset)
+                            buffer_slots.release()
+                        else:
+                            received[offset] = chunk_data
+
+                        _done_count += 1
+                        data_ready.set()
+
+                        chunk_len = len(chunk_data)
+                        chunk_data = None
+
+                        if chunk_len < chunk_size:
+                            return
+
+                async def _launch(start):
+                    nonlocal _total_chunks
+                    chunks_needed = min(
+                        total - 1,
+                        math.ceil((file_size - start) / chunk_size),
+                    )
+
+                    if chunks_needed <= 0:
+                        return []
+
+                    pool = await pool_task
+                    n_sessions = len(pool)
+
+                    if not n_sessions:
+                        return []
+
+                    _total_chunks = chunks_needed
+
+                    for i in range(chunks_needed):
+                        work.put_nowait(start + i * chunk_size)
+
+                    started = [
+                        asyncio.ensure_future(_worker(pool[i % n_sessions]))
+                        for i in range(
+                            min(dl_pool_size * dl_workers_per_session, chunks_needed)
+                        )
+                    ]
+
+                    for t in started:
+                        t.add_done_callback(lambda _: data_ready.set())
+
+                    return started
+
+                _prefetch = (
+                    asyncio.ensure_future(_launch(offset_bytes + chunk_size))
+                    if needs_pool and file_size > 0 and total > 1
+                    else None
+                )
+
+                async def _drop_prefetch():
+                    nonlocal _prefetch
+
+                    if _prefetch is None:
+                        return
+
+                    pending, _prefetch = _prefetch, None
+                    pending.cancel()
+                    outcome = (await asyncio.gather(pending, return_exceptions=True))[0]
+                    started = outcome if isinstance(outcome, list) else []
+
+                    for t in started:
+                        t.cancel()
+
+                    if started:
+                        await asyncio.gather(*started, return_exceptions=True)
+
+                    buffer_slots.release_all()
+
+                try:
+                    r = await session.invoke(
+                        raw.functions.upload.GetFile(
+                            location=location,
+                            offset=offset_bytes,
+                            limit=chunk_size
+                        ),
+                        timeout=Session.MEDIA_WAIT_TIMEOUT,
+                        sleep_threshold=30
+                    )
+                except BaseException:
+                    await _drop_prefetch()
+                    raise
 
                 if isinstance(r, raw.types.upload.File):
                     first_chunk = r.bytes
                     r = None
-                    yield first_chunk
-                    current += 1
-                    offset_bytes += chunk_size
-                    if _write_file is not None:
-                        _write_file.seek(0)
-                        _write_file.write(first_chunk)
 
-                    first_len = len(first_chunk)
-                    first_chunk = None
+                    try:
+                        yield first_chunk
+                        current += 1
+                        offset_bytes += chunk_size
+                        if _write_file is not None:
+                            _write_file.seek(0)
+                            _write_file.write(first_chunk)
 
-                    await _report(offset_bytes)
+                        first_len = len(first_chunk)
+                        first_chunk = None
+
+                        await _report(offset_bytes)
+                    except BaseException:
+                        await _drop_prefetch()
+                        raise
 
                     if not first_len or first_len < chunk_size or current >= total:
+                        await _drop_prefetch()
                         return
 
                     # Sequential fallback when file size is unknown
@@ -1537,105 +1843,11 @@ class Client(Methods):
                                 return
                         return
 
-                    total_chunks = math.ceil((file_size - offset_bytes) / chunk_size)
-                    if needs_pool:
-                        pool = await pool_task
+                    if _prefetch is not None:
+                        pending, _prefetch = _prefetch, None
+                        tasks = await pending
                     else:
-                        pool = []
-                    n_sessions = len(pool)
-                    total_workers = min(
-                        dl_pool_size * dl_workers_per_session, total_chunks
-                    )
-
-                    work = asyncio.Queue()
-                    chunks_needed = min(
-                        total - current,
-                        math.ceil((file_size - offset_bytes) / chunk_size),
-                    )
-                    for i in range(chunks_needed):
-                        work.put_nowait(offset_bytes + i * chunk_size)
-
-                    _write_mode = _write_file is not None and file_size > 0
-                    data_ready = asyncio.Event()
-                    buffer_slots = ReadAhead(self.read_ahead_slots)
-                    if not _write_mode:
-                        received = {}
-                    else:
-                        _write_fd = _write_file.fileno()
-                    _done_count = 0
-                    _total_chunks = chunks_needed
-                    _getfile_rate = TokenBucket(rate=dl_rate, burst=dl_burst)
-                    _last_rate_adj = 0.0
-                    _fast_window = 0
-
-                    async def _worker(session):
-                        nonlocal _done_count, _last_rate_adj, _fast_window
-                        while True:
-                            await buffer_slots.acquire()
-
-                            try:
-                                offset = work.get_nowait()
-                            except asyncio.QueueEmpty:
-                                buffer_slots.release()
-                                return
-
-                            try:
-                                await _getfile_rate.acquire()
-                                t0 = time.monotonic()
-                                r = await session.invoke(
-                                    raw.functions.upload.GetFile(
-                                        location=location,
-                                        offset=offset,
-                                        limit=chunk_size,
-                                    ),
-                                    timeout=Session.MEDIA_WAIT_TIMEOUT,
-                                    sleep_threshold=30,
-                                )
-                            except BaseException:
-                                buffer_slots.release()
-                                raise
-
-                            chunk_data = r.bytes
-                            r = None
-                            t1 = time.monotonic()
-
-                            if _write_mode:
-                                write_at(_write_fd, chunk_data, offset)
-                                buffer_slots.release()
-                            else:
-                                received[offset] = chunk_data
-
-                            _done_count += 1
-                            data_ready.set()
-
-                            chunk_len = len(chunk_data)
-                            chunk_data = None
-
-                            if chunk_len < chunk_size:
-                                return
-
-                            elapsed = t1 - t0
-                            now = t1
-                            if elapsed > 2.0 and now - _last_rate_adj > 0.5:
-                                _last_rate_adj = now
-                                _fast_window = 0
-                                _getfile_rate.rate = max(_getfile_rate.rate * 0.8, 3.0)
-                            elif elapsed < 0.5:
-                                _fast_window += 1
-                                if _fast_window >= 5 and now - _last_rate_adj > 0.5:
-                                    _last_rate_adj = now
-                                    _getfile_rate.rate = min(_getfile_rate.rate + 2.0, dl_rate)
-                                    _fast_window = 0
-                            else:
-                                _fast_window = 0
-
-                    tasks = [
-                        asyncio.ensure_future(_worker(pool[i % n_sessions]))
-                        for i in range(total_workers)
-                    ]
-
-                    for t in tasks:
-                        t.add_done_callback(lambda _: data_ready.set())
+                        tasks = await _launch(offset_bytes)
 
                     _reported_count = -1
 
@@ -1692,12 +1904,43 @@ class Client(Methods):
                         buffer_slots.release_all()
 
                 elif isinstance(r, raw.types.upload.FileCdnRedirect):
+                    await _drop_prefetch()
+
                     cdn_session = await self.get_session(
                         r.dc_id, is_media=True, is_cdn=True, temporary=True
                     )
                     _cdn_rate = TokenBucket(rate=dl_rate, burst=dl_burst)
                     _report_tasks = set()
                     _stop_requested = False
+                    _cdn_hashes = {h.offset: h for h in r.file_hashes}
+
+                    async def _hashes_covering(start: int, length: int) -> list:
+                        covering = []
+                        at = start
+
+                        while at < start + length:
+                            h = _cdn_hashes.pop(at, None)
+
+                            if h is None:
+                                for fetched in await session.invoke(
+                                    raw.functions.upload.GetCdnFileHashes(
+                                        file_token=r.file_token,
+                                        offset=at
+                                    )
+                                ):
+                                    _cdn_hashes[fetched.offset] = fetched
+
+                                h = _cdn_hashes.pop(at, None)
+
+                                CDNFileHashMismatch.check(
+                                    h is not None,
+                                    f"the CDN returned no hash covering offset {at}"
+                                )
+
+                            covering.append(h)
+                            at = h.offset + h.limit
+
+                        return covering
 
                     try:
                         while True:
@@ -1735,17 +1978,15 @@ class Client(Methods):
                                 bytearray(r.encryption_iv[:-4] + (offset_bytes // 16).to_bytes(4, "big"))
                             )
 
-                            hashes = await session.invoke(
-                                raw.functions.upload.GetCdnFileHashes(
-                                    file_token=r.file_token,
-                                    offset=offset_bytes
-                                )
+                            hashes = await _hashes_covering(
+                                offset_bytes, len(decrypted_chunk)
                             )
 
                             # https://core.telegram.org/cdn#verifying-files
                             def _check_all_hashes():
-                                for i, h in enumerate(hashes):
-                                    cdn_chunk = decrypted_chunk[h.limit * i: h.limit * (i + 1)]
+                                for h in hashes:
+                                    at = h.offset - offset_bytes
+                                    cdn_chunk = decrypted_chunk[at: at + h.limit]
                                     CDNFileHashMismatch.check(
                                         h.hash == sha256(cdn_chunk).digest(),
                                         "h.hash == sha256(cdn_chunk).digest()"
@@ -1755,6 +1996,9 @@ class Client(Methods):
 
                             if _stop_requested:
                                 raise pyrogram.StopTransmission
+
+                            if _write_file is not None:
+                                _write_file.write(decrypted_chunk)
 
                             yield decrypted_chunk
 
@@ -1877,6 +2121,7 @@ class Client(Methods):
         sessions = self.media_sessions if is_media else self.sessions
 
         if not temporary and sessions.get(dc_id):
+            sessions[dc_id].last_used = time.monotonic()
             return sessions[dc_id]
 
         # Concurrent exports for one DC invalidate each other: AUTH_BYTES_INVALID.
@@ -1884,6 +2129,7 @@ class Client(Methods):
 
         async with lock:
             if not temporary and sessions.get(dc_id):
+                sessions[dc_id].last_used = time.monotonic()
                 return sessions[dc_id]
 
             if not server_address or not port:
@@ -2007,6 +2253,7 @@ class Client(Methods):
 
             for session in self.media_session_pools.get(dc_id, []):
                 if session.is_started.is_set() or session.is_restarting:
+                    session.last_used = time.monotonic()
                     pool.append(session)
                 else:
                     # dropping it here puts it out of the reaper's reach, and its
@@ -2020,12 +2267,27 @@ class Client(Methods):
                 while needed > 0:
                     chunk = min(needed, 3)
                     async with self._session_creation_gate:
-                        pool.extend(await asyncio.gather(*(
+                        results = await asyncio.gather(*(
                             self._make_media_session(
                                 dc_id, media.auth_key, media.server_address, media.port
                             )
                             for _ in range(chunk)
-                        )))
+                        ), return_exceptions=True)
+
+                    failed = [r for r in results if isinstance(r, BaseException)]
+                    pool.extend(r for r in results if not isinstance(r, BaseException))
+
+                    if failed:
+                        if not pool:
+                            raise failed[0]
+
+                        log.warning(
+                            "Media pool for DC %s is short by %d session(s): %s",
+                            dc_id, needed - (chunk - len(failed)),
+                            str(failed[0]) or type(failed[0]).__name__,
+                        )
+                        break
+
                     needed -= chunk
             self.media_session_pools[dc_id] = pool
             return list(pool)
@@ -2156,6 +2418,9 @@ class Cache:
     def get(self, key, default=None):
         value = self.__getitem__(key)
         return value if value is not None else default
+
+    def pop(self, key, default=None):
+        return self.store.pop(key, default)
 
     def __setitem__(self, key, value):
         if key in self.store:

@@ -52,9 +52,11 @@ from .privacy_key import PrivacyKey
 from .privacy_rule_type import PrivacyRuleType
 from .profile_color import ProfileColor
 from .profile_tab import ProfileTab
+from .proxy_scheme import ProxyScheme
 from .reply_color import ReplyColor
 from .rich_button_style import RichButtonStyle
 from .sent_code_type import SentCodeType
+from .sticker_format import StickerFormat
 from .sticker_type import StickerType
 from .stories_privacy_rules import StoriesPrivacyRules
 from .suggested_post_refund_reason import SuggestedPostRefundReason
@@ -100,9 +102,11 @@ __all__ = [
     'PrivacyRuleType',
     'ProfileColor',
     'ProfileTab',
+    'ProxyScheme',
     'ReplyColor',
     'RichButtonStyle',
     'SentCodeType',
+    'StickerFormat',
     'StickerType',
     'StoriesPrivacyRules',
     'SuggestedPostRefundReason',

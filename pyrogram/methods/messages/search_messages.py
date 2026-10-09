@@ -16,6 +16,7 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with Pyrogram.  If not, see <http://www.gnu.org/licenses/>.
 
+from datetime import datetime
 from typing import Union, List, AsyncGenerator, Optional
 
 import pyrogram
@@ -33,19 +34,24 @@ async def get_chunk(
     from_user: Optional[Union[int, str]] = None,
     saved_peer_id: Optional[Union[int, str]] = None,
     top_msg_id: Optional[int] = None,
+    offset_id: int = 0,
+    min_date: Optional[datetime] = None,
+    max_date: Optional[datetime] = None,
+    min_id: int = 0,
+    max_id: int = 0,
 ) -> List["types.Message"]:
     r = await client.invoke(
         raw.functions.messages.Search(
             peer=await client.resolve_peer(chat_id),
             q=query,
             filter=filter.value(),
-            min_date=0,
-            max_date=0,
-            offset_id=0,
+            min_date=utils.datetime_to_timestamp(min_date) or 0,
+            max_date=utils.datetime_to_timestamp(max_date) or 0,
+            offset_id=offset_id,
             add_offset=offset,
             limit=limit,
-            min_id=0,
-            max_id=0,
+            min_id=min_id,
+            max_id=max_id,
             from_id=(
                 await client.resolve_peer(from_user)
                 if from_user
@@ -77,6 +83,11 @@ class SearchMessages:
         from_user: Optional[Union[int, str]] = None,
         saved_peer_id: Optional[Union[int, str]] = None,
         top_msg_id: Optional[int] = None,
+        offset_id: int = 0,
+        min_date: Optional[datetime] = None,
+        max_date: Optional[datetime] = None,
+        min_id: int = 0,
+        max_id: int = 0,
     ) -> Optional[AsyncGenerator["types.Message", None]]:
         """Search for text and media messages inside a specific chat.
 
@@ -118,6 +129,21 @@ class SearchMessages:
             top_msg_id (``int``, *optional*):
                 Unique identifier of the forum topic the action is broadcast to.
 
+            offset_id (``int``, *optional*):
+                Identifier of the first message to be returned.
+
+            min_date (:py:obj:`~datetime.datetime`, *optional*):
+                Pass a date to return only messages sent on or after that date.
+
+            max_date (:py:obj:`~datetime.datetime`, *optional*):
+                Pass a date to return only messages sent on or before that date.
+
+            min_id (``int``, *optional*):
+                Identifier of the oldest message to be returned.
+
+            max_id (``int``, *optional*):
+                Identifier of the newest message to be returned.
+
         Returns:
             ``Generator``: A generator yielding :obj:`~pyrogram.types.Message` objects.
 
@@ -154,6 +180,11 @@ class SearchMessages:
                 from_user=from_user,
                 saved_peer_id=saved_peer_id,
                 top_msg_id=top_msg_id,
+                offset_id=offset_id,
+                min_date=min_date,
+                max_date=max_date,
+                min_id=min_id,
+                max_id=max_id,
             )
 
             if not messages:

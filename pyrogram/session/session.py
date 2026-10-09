@@ -33,6 +33,7 @@ import pyrogram
 from pyrogram import utils
 from pyrogram import raw
 from pyrogram.connection import Connection, transport_error
+from pyrogram.connection.proxy import client_proxy_address
 from pyrogram.crypto.executor import get_crypto_executor
 from pyrogram.errors import (
     RPCError, InternalServerError, AuthKeyDuplicated, FloodWait, FloodPremiumWait, ServiceUnavailable,
@@ -91,6 +92,7 @@ class Session:
     MAX_SKEW_BREACHES = 3
     MAX_INFLIGHT_PACKETS = int(os.environ.get("WZGRAM_MAX_INFLIGHT_PACKETS", 16))
     MAX_INFLIGHT_MEDIA = int(os.environ.get("WZGRAM_MAX_INFLIGHT_MEDIA", 6))
+    MAX_PENDING_UPDATES = int(os.environ.get("WZGRAM_MAX_PENDING_UPDATES", 256))
     INLINE_CRYPTO_MAX = int(os.environ.get("WZGRAM_INLINE_CRYPTO_MAX", 32 * 1024))
 
     TRANSPORT_ERRORS = Connection.TRANSPORT_ERRORS
@@ -136,6 +138,8 @@ class Session:
         self._packet_tasks = set()
         self._packet_semaphore = asyncio.Semaphore(Session.MAX_INFLIGHT_PACKETS)
         self._update_semaphore = asyncio.Semaphore(32)
+        self._pending_updates = 0
+        self._dropped_updates = 0
         self._invoke_semaphore = (
             asyncio.Semaphore(Session.MAX_INFLIGHT_MEDIA) if is_media else None
         )
@@ -158,6 +162,7 @@ class Session:
         self._start_active = False
         self._start_completed = asyncio.Event()
         self._stopping = False
+        self._closed = False
 
         try:
             self.loop = asyncio.get_running_loop()
@@ -176,6 +181,10 @@ class Session:
         try:
             while True:
                 attempt += 1
+
+                if self._closed:
+                    return
+
                 self._stopping = False
                 self._teardown_started = False
                 self._skew_breaches = 0
@@ -202,6 +211,16 @@ class Session:
 
                     await self.send(raw.functions.Ping(ping_id=0), timeout=handshake_timeout)
 
+                    # Telegram wants to know which proxy a client sits behind.
+                    proxy_address = client_proxy_address(self.client.proxy)
+                    client_proxy = None
+
+                    if proxy_address is not None:
+                        client_proxy = raw.types.InputClientProxy(
+                            address=proxy_address.hostname,
+                            port=proxy_address.port
+                        )
+
                     if not self.is_cdn:
                         await self.send(
                             raw.functions.InvokeWithLayer(
@@ -220,6 +239,7 @@ class Session:
                                         if self.client.init_connection_params
                                         else None
                                     ),
+                                    proxy=client_proxy,
                                 )
                             ),
                             timeout=handshake_timeout
@@ -232,10 +252,13 @@ class Session:
                     log.info("System: %s (%s)", self.client.system_version, self.client.lang_code)
                 except AuthKeyDuplicated as e:
                     self._start_exc = e
-                    await self.stop()
+                    await self._stop()
                     raise e
                 except (FloodWait, FloodPremiumWait) as e:
-                    await self.stop()
+                    await self._stop()
+
+                    if self._closed:
+                        return
 
                     if max_attempts is not None and attempt >= max_attempts:
                         self._start_exc = e
@@ -250,7 +273,10 @@ class Session:
                     )
                     await asyncio.sleep(backoff)
                 except (InternalServerError, ServiceUnavailable, TimeoutError, OSError) as e:
-                    await self.stop()
+                    await self._stop()
+
+                    if self._closed:
+                        return
 
                     if max_attempts is not None and attempt >= max_attempts:
                         self._start_exc = e
@@ -264,14 +290,18 @@ class Session:
                     await asyncio.sleep(backoff)
                 except RPCError as e:
                     self._start_exc = e
-                    await self.stop()
+                    await self._stop()
                     raise
                 except (Exception, asyncio.CancelledError) as e:
                     self._start_exc = e
-                    await self.stop()
+                    await self._stop()
                     raise e
                 else:
                     break
+
+            if self._closed:
+                await self._stop()
+                return
 
             self.is_started.set()
 
@@ -287,6 +317,11 @@ class Session:
                 log.exception(e)
 
     async def stop(self):
+        self._closed = True
+
+        await self._stop()
+
+    async def _stop(self):
         self.is_started.clear()
         self._stopping = True
 
@@ -340,13 +375,20 @@ class Session:
         return self._restart_lock.locked() or self._start_active
 
     async def restart(self):
+        if self._closed:
+            return
+
         if self._restart_lock.locked():
             await self._restart_done.wait()
             return
         async with self._restart_lock:
             self._restart_done.clear()
             try:
-                await self.stop()
+                await self._stop()
+
+                if self._closed:
+                    return
+
                 if getattr(self.client.storage, "conn", True) is None:
                     await self.client.storage.open()
                 await self.start(max_attempts=self.MAX_RETRIES)
@@ -504,7 +546,7 @@ class Session:
                 msg_id = msg.body.msg_id
             else:
                 if self.client is not None:
-                    utils.run_in_background(self._run_update(msg.body), self.loop)
+                    self._schedule_update(msg.body)
 
             if msg_id in self.results:
                 self.results[msg_id].value = getattr(msg.body, "result", msg.body)
@@ -565,6 +607,31 @@ class Session:
         log.debug("Sending %s acks", len(ack_ids))
 
         await self.send(raw.types.MsgsAck(msg_ids=ack_ids), False)
+
+    def _schedule_update(self, body):
+        if self._pending_updates >= Session.MAX_PENDING_UPDATES:
+            self._dropped_updates += 1
+
+            if self._dropped_updates == 1:
+                log.warning(
+                    "Dropping %s: %s update batches are already waiting for handlers, "
+                    "handlers cannot keep up with the update rate. Consider raising "
+                    "`workers` or moving slow work off the handler.",
+                    type(body).__name__, self._pending_updates
+                )
+
+            return
+
+        task = utils.run_in_background(self._run_update(body), self.loop)
+        self._pending_updates += 1
+        task.add_done_callback(self._update_done)
+
+    def _update_done(self, _task):
+        self._pending_updates -= 1
+
+        if self._dropped_updates and self._pending_updates <= Session.MAX_PENDING_UPDATES // 2:
+            log.warning("Dropped %s update batches while handlers were busy", self._dropped_updates)
+            self._dropped_updates = 0
 
     async def _run_update(self, body):
         async with self._update_semaphore:
@@ -730,6 +797,9 @@ class Session:
         if self._start_active:
             await self._start_completed.wait()
 
+        if self._closed:
+            raise ConnectionError("Session is stopped")
+
         if not self.is_started.is_set():
             await self.restart()
 
@@ -760,12 +830,16 @@ class Session:
     ):
         slept = 0.0
         flood_budget = sleep_threshold * Session.MAX_RETRIES
+        retries = max(1, retries)
+        attempt = 0
 
         while retries > 0:
             if not self.is_started.is_set():
                 await self._wait_started()
 
-            if isinstance(query, (raw.functions.InvokeWithoutUpdates, raw.functions.InvokeWithTakeout)):
+            if isinstance(query, (raw.functions.InvokeWithoutUpdates,
+                                  raw.functions.InvokeWithTakeout,
+                                  raw.functions.InvokeWithReCaptcha)):
                 inner_query = query.query
             else:
                 inner_query = query
@@ -794,6 +868,8 @@ class Session:
                 if retries == 0:
                     raise
 
+                attempt += 1
+
                 (log.warning if retries < 2 else log.info)(
                     '[%s] Retrying "%s" (attempt %s/%s) due to: %s',
                     self.client.name, query_name,
@@ -807,7 +883,7 @@ class Session:
                     isinstance(e, TimeoutError)
                     and time.monotonic() - self.last_packet_received < self.WAIT_TIMEOUT
                 ):
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(min(2 ** (attempt - 1), 30))
                 else:
                     await self.restart()
 

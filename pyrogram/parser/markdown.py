@@ -18,6 +18,7 @@
 
 import html
 import re
+import urllib.parse
 from typing import Optional
 
 import pyrogram
@@ -33,7 +34,7 @@ SPOILER_DELIM = "||"
 CODE_DELIM = "`"
 PRE_DELIM = "```"
 
-MARKDOWN_RE = re.compile(r"({d})|\[(.+?)\]\((.+?)\)".format(
+MARKDOWN_RE = re.compile(r"({d})|(!?)\[(.+?)\]\((.+?)\)".format(
     d="|".join(
         ["".join(i) for i in [
             [rf"\{j}" for j in i]
@@ -61,6 +62,8 @@ QUOTE_MARKERS = (
 OPENING_TAG = "<{}>"
 CLOSING_TAG = "</{}>"
 URL_MARKUP = '<a href="{}">{}</a>'
+EMOJI_MARKUP = '<tg-emoji emoji-id="{}">{}</tg-emoji>'
+DATE_TIME_MARKUP = '<tg-time unix="{}" format="{}">{}</tg-time>'
 FIXED_WIDTH_DELIMS = [CODE_DELIM, PRE_DELIM]
 
 
@@ -129,7 +132,7 @@ class Markdown:
 
         for i, match in enumerate(re.finditer(MARKDOWN_RE, text)):
             start, _ = match.span()
-            delim, text_url, url = match.groups()
+            delim, bang, text_url, url = match.groups()
             full = match.group(0)
 
             if delim in FIXED_WIDTH_DELIMS:
@@ -139,7 +142,29 @@ class Markdown:
                 continue
 
             if text_url:
-                text = utils.replace_once(text, full, URL_MARKUP.format(url, text_url), start)
+                markup = None
+
+                if bang:
+                    parsed = urllib.parse.urlparse(url)
+                    params = urllib.parse.parse_qs(parsed.query)
+
+                    if parsed.scheme == "tg" and parsed.netloc == "emoji":
+                        emoji_id = params.get("id", [""])[0]
+
+                        if emoji_id.isdigit():
+                            markup = EMOJI_MARKUP.format(emoji_id, text_url)
+                    elif parsed.scheme == "tg" and parsed.netloc == "time":
+                        unix_time = params.get("unix", [""])[0]
+
+                        if unix_time.isdigit():
+                            markup = DATE_TIME_MARKUP.format(
+                                unix_time, params.get("format", [""])[0], text_url
+                            )
+
+                if markup is None:
+                    markup = bang + URL_MARKUP.format(url, text_url)
+
+                text = utils.replace_once(text, full, markup, start)
                 continue
 
             if delim == BOLD_DELIM:
@@ -188,14 +213,8 @@ class Markdown:
 
     @staticmethod
     def unparse(text: str, entities: list):
-        text = utils.add_surrogates(text)
-
-        entities_offsets = []
-
-        for entity in entities:
+        def parse_one(entity, start, end):
             entity_type = entity.type
-            start = entity.offset
-            end = start + entity.length
 
             if entity_type == MessageEntityType.BOLD:
                 start_tag = end_tag = BOLD_DELIM
@@ -216,17 +235,29 @@ class Markdown:
                 start_tag = EXPANDABLE_QUOTE_DELIM if expandable else QUOTE_DELIM
                 end_tag = SPOILER_DELIM if expandable else ""
 
+                extra = []
+
                 for index in range(start, end - 1):
                     if text[index] == "\n":
-                        entities_offsets.append((QUOTE_DELIM, index + 1))
+                        extra.append((QUOTE_DELIM, index + 1))
+
+                if expandable:
+                    line_end = text.find("\n", end)
+                    end = len(text) if line_end < 0 else line_end
+
+                return (start_tag, start), (end_tag, end), extra
             elif entity_type == MessageEntityType.DATE_TIME:
                 unix_time = getattr(entity, "unix_time", 0) or 0
                 dt_format = getattr(entity, "date_time_format", "") or ""
-                if dt_format:
-                    start_tag = f'<tg-time unix="{unix_time}" format="{dt_format}">'
-                    end_tag = "</tg-time>"
-                else:
-                    continue
+                start_tag = "!["
+                end_tag = (
+                    f"](tg://time?unix={unix_time}&format={dt_format})"
+                    if dt_format
+                    else f"](tg://time?unix={unix_time})"
+                )
+            elif entity_type == MessageEntityType.CUSTOM_EMOJI:
+                start_tag = "!["
+                end_tag = f"](tg://emoji?id={entity.custom_emoji_id})"
             elif entity_type == MessageEntityType.SPOILER:
                 start_tag = end_tag = SPOILER_DELIM
             elif entity_type == MessageEntityType.TEXT_LINK:
@@ -238,21 +269,48 @@ class Markdown:
                 start_tag = "["
                 end_tag = f"](tg://user?id={user.id})"
             else:
-                continue
+                return None
 
-            entities_offsets.append((start_tag, start,))
-            entities_offsets.append((end_tag, end,))
+            return (start_tag, start), (end_tag, end), []
 
-        entities_offsets = map(
-            lambda x: x[1],
-            sorted(
-                enumerate(entities_offsets),
-                key=lambda x: (x[1][1], x[0]),
-                reverse=True
-            )
-        )
+        def recursive(span_i: int) -> int:
+            start, end, entity = spans[span_i]
+            this = parse_one(entity, start, end)
 
-        for entity, offset in entities_offsets:
-            text = text[:offset] + entity + text[offset:]
+            if this is None:
+                return 1
+
+            (start_tag, start), (end_tag, end), extra = this
+
+            entities_offsets.append((start_tag, start))
+            entities_offsets.extend(extra)
+
+            internal_i = span_i + 1
+
+            while internal_i < len(spans) and spans[internal_i][0] < end:
+                internal_i += recursive(internal_i)
+
+            entities_offsets.append((end_tag, end))
+
+            return internal_i - span_i
+
+        text = utils.add_surrogates(text)
+
+        spans = utils.split_crossing_spans(text, entities)
+
+        entities_offsets = []
+
+        i = 0
+
+        while i < len(spans):
+            i += recursive(i)
+
+        entities_offsets.sort(key=lambda x: x[1])
+
+        last_offset = len(text)
+
+        for entity, offset in reversed(entities_offsets):
+            text = text[:offset] + entity + text[offset:last_offset] + text[last_offset:]
+            last_offset = offset
 
         return utils.remove_surrogates(text)

@@ -33,6 +33,7 @@ class SendPhoneNumberCode:
         phone_number: str,
         settings: Optional["types.PhoneNumberAuthenticationSettings"] = None,
         type: "enums.PhoneNumberCodeType" = enums.PhoneNumberCodeType.AUTHENTICATION,
+        recaptcha_token: Optional[str] = None,
         # Deprecated params
         current_number: Optional[bool] = None,
         allow_flashcall: Optional[bool] = None,
@@ -90,6 +91,9 @@ class SendPhoneNumberCode:
             app_sandbox (``bool``, *optional*):
                 Deprecated, use *settings* instead.
                 Pass True to use the sandbox push service rather than the production one.
+
+            recaptcha_token (``str``, *optional*):
+                Token of the reCAPTCHA the server asked to solve before it sends the code.
 
         Returns:
             :obj:`~pyrogram.types.SentCode`: On success, returns information about the sent code.
@@ -193,7 +197,7 @@ class SendPhoneNumberCode:
                         settings=settings.write(),
                     )
 
-                r = await self.invoke(rpc)
+                r = await self.invoke(rpc, recaptcha_token=recaptcha_token)
             except (PhoneMigrate, NetworkMigrate) as e:
                 dc_option = await self.get_dc_option(e.value, ipv6=self.ipv6)
                 await self.session.stop()

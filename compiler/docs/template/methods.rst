@@ -86,6 +86,24 @@ Messages
 
     {messages}
 
+Stickers
+--------
+
+.. note::
+
+    The sticker set methods were ported from `kurigram <https://github.com/kurigram-org/kurigram>`_ by
+    `KurimuzonAkuma <https://github.com/KurimuzonAkuma>`_ and modified for wzgram.
+
+.. autosummary::
+    :nosignatures:
+
+    {stickers}
+
+.. toctree::
+    :hidden:
+
+    {stickers}
+
 Chats
 -----
 

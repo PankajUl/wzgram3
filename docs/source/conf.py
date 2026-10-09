@@ -27,7 +27,7 @@ autodoc_mock_imports = [
     "warpcrypto",
     "tgcrypto",
     "cryptg",
-    "pysocks",
+    "python_socks",
     "uvloop",
 ]
 

@@ -111,7 +111,7 @@ application/docbook+xml				dbk
 application/dssc+der				dssc
 application/dssc+xml				xdssc
 # application/dvcs
-application/ecmascript				ecma
+application/ecmascript				ecma es
 # application/edi-consent
 # application/edi-x12
 # application/edifact
@@ -606,6 +606,7 @@ application/vnd.genomatix.tuxedo		txd
 # application/vnd.geo+json
 # application/vnd.geocube+xml
 application/vnd.geogebra.file			ggb
+application/vnd.geogebra.slides			ggs
 application/vnd.geogebra.tool			ggt
 application/vnd.geometry-explorer		gex gre
 application/vnd.geonext				gxt
@@ -1110,6 +1111,7 @@ application/vnd.smart.teacher			teacher
 application/vnd.solent.sdkm+xml			sdkm sdkd
 application/vnd.spotfire.dxp			dxp
 application/vnd.spotfire.sfs			sfs
+application/vnd.sqlite3				sqlite sqlite3
 # application/vnd.sss-cod
 # application/vnd.sss-dtf
 # application/vnd.sss-ntf
@@ -1274,6 +1276,7 @@ application/x-dtbresource+xml			res
 application/x-dvi				dvi
 application/x-envoy				evy
 application/x-eva				eva
+application/x-fictionbook+xml			fb2
 application/x-font-bdf				bdf
 # application/x-font-dos
 # application/x-font-framemaker
@@ -1344,6 +1347,7 @@ application/x-tex				tex
 application/x-tex-tfm				tfm
 application/x-texinfo				texinfo texi
 application/x-tgif				obj
+application/x-tgwallpattern			tgv
 application/x-ustar				ustar
 application/x-wais-source			src
 # application/x-www-form-urlencoded
@@ -1557,6 +1561,7 @@ font/otf					otf
 font/ttf					ttf
 font/woff					woff
 font/woff2					woff2
+image/avif					avif
 image/bmp					bmp
 image/cgm					cgm
 # image/dicom-rle
@@ -1565,12 +1570,17 @@ image/cgm					cgm
 # image/fits
 image/g3fax					g3
 image/gif					gif
+image/heic					heic
+image/heic-sequence				heics
+image/heif					heif
+image/heif-sequence				heifs
 image/ief					ief
 # image/jls
 # image/jp2
 image/jpeg					jpg jpeg jpe
 # image/jpm
 # image/jpx
+image/jxl					jxl
 image/ktx					ktx
 # image/naplps
 image/png					png
@@ -1664,7 +1674,7 @@ model/vnd.gdl					gdl
 # model/vnd.gs.gdl
 model/vnd.gtw					gtw
 # model/vnd.moml+xml
-model/vnd.mts					mts
+model/vnd.mts
 # model/vnd.opengex
 # model/vnd.parasolid.transmit.binary
 # model/vnd.parasolid.transmit.text
@@ -1709,7 +1719,7 @@ text/csv					csv
 text/html					html htm
 # text/javascript
 # text/jcr-cnd
-# text/markdown
+text/markdown					md
 # text/mizar
 text/n3						n3
 # text/parameters
@@ -1728,6 +1738,7 @@ text/richtext					rtx
 # text/rtploopback
 # text/rtx
 text/sgml					sgml sgm
+text/swift					swift
 # text/t140
 text/tab-separated-values			tsv
 text/troff					t tr roff man me ms
@@ -1771,6 +1782,7 @@ text/x-java-source				java
 text/x-nfo					nfo
 text/x-opml					opml
 text/x-pascal					p pas
+text/x-php					php
 text/x-setext					etx
 text/x-sfv					sfv
 text/x-uuencode					uu

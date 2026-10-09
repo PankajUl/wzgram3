@@ -20,6 +20,25 @@ from .add_chat_members import AddChatMembers
 from .archive_chats import ArchiveChats
 from .ban_chat_member import BanChatMember
 from .close_forum_topic import CloseForumTopic
+from .close_general_forum_topic import CloseGeneralForumTopic
+from .edit_general_forum_topic import EditGeneralForumTopic
+from .hide_general_forum_topic import HideGeneralForumTopic
+from .pin_forum_topic import PinForumTopic
+from .reopen_forum_topic import ReopenForumTopic
+from .reopen_general_forum_topic import ReopenGeneralForumTopic
+from .reorder_folders import ReorderFolders
+from .set_chat_accent_color import SetChatAccentColor
+from .set_upgraded_gift_colors import SetUpgradedGiftColors
+from .set_chat_direct_messages_group import SetChatDirectMessagesGroup
+from .set_chat_discussion_group import SetChatDiscussionGroup
+from .set_chat_member_tag import SetChatMemberTag
+from .set_main_profile_tab import SetMainProfileTab
+from .toggle_folder_tags import ToggleFolderTags
+from .transfer_chat_ownership import TransferChatOwnership
+from .unhide_general_forum_topic import UnhideGeneralForumTopic
+from .unpin_all_forum_topic_messages import UnpinAllForumTopicMessages
+from .unpin_all_general_forum_topic_messages import UnpinAllGeneralForumTopicMessages
+from .unpin_forum_topic import UnpinForumTopic
 from .create_channel import CreateChannel
 from .create_folder import CreateFolder
 from .create_folder_invite_link import CreateFolderInviteLink
@@ -101,6 +120,25 @@ class Chats(
     ArchiveChats,
     BanChatMember,
     CloseForumTopic,
+    CloseGeneralForumTopic,
+    EditGeneralForumTopic,
+    HideGeneralForumTopic,
+    PinForumTopic,
+    ReopenForumTopic,
+    ReopenGeneralForumTopic,
+    ReorderFolders,
+    SetChatAccentColor,
+    SetUpgradedGiftColors,
+    SetChatDirectMessagesGroup,
+    SetChatDiscussionGroup,
+    SetChatMemberTag,
+    SetMainProfileTab,
+    ToggleFolderTags,
+    TransferChatOwnership,
+    UnhideGeneralForumTopic,
+    UnpinAllForumTopicMessages,
+    UnpinAllGeneralForumTopicMessages,
+    UnpinForumTopic,
     CreateChannel,
     CreateFolder,
     CreateFolderInviteLink,

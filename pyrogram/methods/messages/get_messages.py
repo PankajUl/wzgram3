@@ -20,6 +20,7 @@ import logging
 from typing import Union, List, Iterable, Optional
 
 import pyrogram
+from pyrogram import errors
 from pyrogram import raw
 from pyrogram import types
 from pyrogram import utils
@@ -36,6 +37,7 @@ class GetMessages:
         chat_id: Union[int, str],
         message_ids: Optional[Union[int, Iterable[int]]] = None,
         reply_to_message_ids: Optional[Union[int, Iterable[int]]] = None,
+        pinned: Optional[bool] = None,
         replies: int = 1
     ) -> Union["types.Message", List["types.Message"]]:
         """Get one or more messages from a chat by using message identifiers.
@@ -58,6 +60,9 @@ class GetMessages:
                 Pass a single message identifier or an iterable of message ids (as integers) to get the content of
                 the previous message you replied to using this message.
                 If *message_ids* is set, this argument will be ignored.
+
+            pinned (``bool``, *optional*):
+                Pass True to get the last pinned message of the chat, ignoring *message_ids*.
 
             replies (``int``, *optional*):
                 The number of subsequent replies to get for each message.
@@ -89,20 +94,38 @@ class GetMessages:
         Raises:
             ValueError: In case of invalid arguments.
         """
-        ids, ids_type = (
-            (message_ids, raw.types.InputMessageID) if message_ids
-            else (reply_to_message_ids, raw.types.InputMessageReplyTo) if reply_to_message_ids
-            else (None, None)
-        )
-
-        if ids is None:
-            raise ValueError("No argument supplied. Either pass message_ids or reply_to_message_ids")
-
         peer = await self.resolve_peer(chat_id)
 
-        is_iterable = not isinstance(ids, int)
-        ids = list(ids) if is_iterable else [ids]
-        ids = [ids_type(id=i) for i in ids]
+        if pinned:
+            is_iterable = False
+
+            if isinstance(peer, raw.types.InputPeerChannel):
+                ids = [raw.types.InputMessagePinned()]
+            else:
+                if isinstance(peer, raw.types.InputPeerChat):
+                    r = await self.invoke(raw.functions.messages.GetFullChat(chat_id=peer.chat_id))
+                    pinned_msg_id = r.full_chat.pinned_msg_id
+                else:
+                    r = await self.invoke(raw.functions.users.GetFullUser(id=peer))
+                    pinned_msg_id = r.full_user.pinned_msg_id
+
+                if not pinned_msg_id:
+                    return None
+
+                ids = [raw.types.InputMessageID(id=pinned_msg_id)]
+        else:
+            ids, ids_type = (
+                (message_ids, raw.types.InputMessageID) if message_ids is not None
+                else (reply_to_message_ids, raw.types.InputMessageReplyTo) if reply_to_message_ids is not None
+                else (None, None)
+            )
+
+            if ids is None:
+                raise ValueError("No argument supplied. Either pass message_ids or reply_to_message_ids")
+
+            is_iterable = not isinstance(ids, int)
+            ids = list(ids) if is_iterable else [ids]
+            ids = [ids_type(id=i) for i in ids]
 
         if replies < 0:
             replies = (1 << 31) - 1
@@ -112,7 +135,13 @@ class GetMessages:
         else:
             rpc = raw.functions.messages.GetMessages(id=ids)
 
-        r = await self.invoke(rpc, sleep_threshold=-1)
+        try:
+            r = await self.invoke(rpc, sleep_threshold=-1)
+        except errors.MessageIdsEmpty:
+            if pinned:
+                return None
+
+            raise
 
         messages = await utils.parse_messages(self, r, replies=replies)
 

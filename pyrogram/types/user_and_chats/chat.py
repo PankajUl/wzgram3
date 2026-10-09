@@ -956,6 +956,9 @@ class Chat(Object):
         if channel is None:
             return None
 
+        if isinstance(channel, (raw.types.Community, raw.types.CommunityForbidden)):
+            return Chat._parse_community_chat(client, channel)
+
         peer_id = utils.get_channel_id(channel.id)
         restriction_reason = getattr(channel, "restriction_reason", [])
         usernames = getattr(channel, "usernames", [])
@@ -1044,8 +1047,8 @@ class Chat(Object):
             id=peer_id,
             type=enums.ChatType.COMMUNITY,
             title=community.title,
-            is_creator=community.creator,
-            is_min=community.min,
+            is_creator=getattr(community, "creator", None),
+            is_min=getattr(community, "min", None),
             dc_id=getattr(getattr(community, "photo", None), "dc_id", None),
             raw=community,
             client=client

@@ -23,6 +23,7 @@ from typing import Union, BinaryIO, List, Optional, Callable
 
 import pyrogram
 from pyrogram import StopTransmission
+from pyrogram import enums
 from pyrogram import raw
 from pyrogram import types
 from pyrogram import utils
@@ -39,6 +40,10 @@ class SendSticker:
         sticker: Union[str, BinaryIO],
         ttl_seconds: Optional[int] = None,
         has_spoiler: Optional[bool] = None,
+        emoji: Optional[str] = None,
+        caption: str = "",
+        parse_mode: Optional["enums.ParseMode"] = None,
+        caption_entities: Optional[List["types.MessageEntity"]] = None,
         disable_notification: Optional[bool] = None,
         reply_to_message_id: Optional[int] = None,
         reply_to_chat_id: Optional[Union[int, str]] = None,
@@ -89,6 +94,21 @@ class SendSticker:
                 pass an HTTP URL as a string for Telegram to get a .webp sticker file from the Internet,
                 pass a file path as string to upload a new sticker that exists on your local machine, or
                 pass a binary file-like object with its attribute ".name" set for in-memory uploads.
+
+            emoji (``str``, *optional*):
+                Emoji the sticker stands for.
+                It is carried by the sticker document, so it applies to a sticker being
+                uploaded and is ignored for one that already exists on Telegram.
+
+            caption (``str``, *optional*):
+                Caption of the sticker, 0-1024 characters.
+
+            parse_mode (:obj:`~pyrogram.enums.ParseMode`, *optional*):
+                By default, texts are parsed using both Markdown and HTML styles.
+                You can combine both syntaxes together.
+
+            caption_entities (List of :obj:`~pyrogram.types.MessageEntity`, *optional*):
+                List of special entities that appear in the caption, which can be specified instead of *parse_mode*.
 
             disable_notification (``bool``, *optional*):
                 Sends the message silently.
@@ -251,7 +271,11 @@ class SendSticker:
                         ttl_seconds=ttl_seconds,
                         spoiler=has_spoiler,
                         attributes=[
-                            raw.types.DocumentAttributeFilename(file_name=os.path.basename(sticker))
+                            raw.types.DocumentAttributeFilename(file_name=os.path.basename(sticker)),
+                            raw.types.DocumentAttributeSticker(
+                                alt=emoji or "",
+                                stickerset=raw.types.InputStickerSetEmpty()
+                            )
                         ]
                     )
                 elif re.match("^https?://", sticker):
@@ -274,13 +298,19 @@ class SendSticker:
                     attributes=[
                         raw.types.DocumentAttributeFilename(
                             file_name=utils.get_file_name(sticker, fallback="sticker.webp")
+                        ),
+                        raw.types.DocumentAttributeSticker(
+                            alt=emoji or "",
+                            stickerset=raw.types.InputStickerSetEmpty()
                         )
                     ]
                 )
 
             while True:
                 try:
-                    text_params = {"message": ""}
+                    text_params = await utils.parse_text_entities(
+                        self, caption, parse_mode, caption_entities
+                    )
 
                     r = await self.invoke(
                         await as_ephemeral(self, ephemeral_message_parameters, raw.functions.messages.SendMedia(
@@ -320,12 +350,15 @@ class SendSticker:
                         if isinstance(i, (raw.types.UpdateNewMessage,
                                           raw.types.UpdateNewChannelMessage,
                                           raw.types.UpdateNewScheduledMessage,
-                                          raw.types.UpdateNewEphemeralMessage)):
+                                          raw.types.UpdateNewEphemeralMessage,
+                                          raw.types.UpdateBotNewBusinessMessage)):
                             return await types.Message._parse(
                                 self, i.message,
                                 {i.id: i for i in r.users},
                                 {i.id: i for i in r.chats},
-                                is_scheduled=isinstance(i, raw.types.UpdateNewScheduledMessage)
+                                is_scheduled=isinstance(i, raw.types.UpdateNewScheduledMessage),
+                                business_connection_id=getattr(i, "connection_id", None),
+                                raw_reply_to_message=getattr(i, "reply_to_message", None)
                             )
 
                     # a send that succeeded is never re-sent, whatever the answer carried

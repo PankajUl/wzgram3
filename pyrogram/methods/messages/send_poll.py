@@ -29,13 +29,6 @@ class _EmptyEntities(list):
         return True
 
 
-async def _write_entities(client: "pyrogram.Client", entities: Optional[List["types.MessageEntity"]]) -> list:
-    for entity in entities or []:
-        entity._client = client
-
-    return [await entity.write() for entity in entities or []]
-
-
 class SendPoll:
     async def send_poll(
         self: "pyrogram.Client",
@@ -280,15 +273,15 @@ class SendPoll:
                 )
 
         if isinstance(question, types.FormattedText):
-            question_text = question.text
-            question_entities = await _write_entities(self, question.entities)
+            question = await question.write(self)
+            question_text, question_entities = question.text, question.entities
         else:
             question_text = question
             question_entities = []
 
         if isinstance(explanation, types.FormattedText):
-            solution_text = explanation.text
-            solution_entities = await _write_entities(self, explanation.entities)
+            explanation = await explanation.write(self)
+            solution_text, solution_entities = explanation.text, explanation.entities
         elif explanation is not None:
             solution_text, solution_entities = (await utils.parse_text_entities(
                 self, explanation, explanation_parse_mode, explanation_entities
@@ -301,8 +294,8 @@ class SendPoll:
             solution_entities = _EmptyEntities()
 
         if isinstance(description, types.FormattedText):
-            description_text = description.text
-            description_entities = await _write_entities(self, description.entities)
+            description = await description.write(self)
+            description_text, description_entities = description.text, description.entities
         else:
             description_text = description
             description_entities = []
@@ -396,10 +389,13 @@ class SendPoll:
         for i in r.updates:
             if isinstance(i, (raw.types.UpdateNewMessage,
                               raw.types.UpdateNewChannelMessage,
-                              raw.types.UpdateNewScheduledMessage)):
+                              raw.types.UpdateNewScheduledMessage,
+                              raw.types.UpdateBotNewBusinessMessage)):
                 return await types.Message._parse(
                     self, i.message,
                     {i.id: i for i in r.users},
                     {i.id: i for i in r.chats},
-                    is_scheduled=isinstance(i, raw.types.UpdateNewScheduledMessage)
+                    is_scheduled=isinstance(i, raw.types.UpdateNewScheduledMessage),
+                    business_connection_id=getattr(i, "connection_id", None),
+                    raw_reply_to_message=getattr(i, "reply_to_message", None)
                 )

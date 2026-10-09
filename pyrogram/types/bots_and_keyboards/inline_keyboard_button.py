@@ -204,7 +204,7 @@ class InlineKeyboardButton(Object):
             specified type, opens that chat and inserts the bot username and an optional
             inline query in the input field.
 
-        copy_text (:obj:`~pyrogram.types.CopyTextButton`, *optional*):
+        copy_text (``str`` | :obj:`~pyrogram.types.CopyTextButton`, *optional*):
             Description of the button that copies the specified text to the clipboard.
 
         pay (``bool``, *optional*):
@@ -237,7 +237,7 @@ class InlineKeyboardButton(Object):
         switch_inline_query_current_chat: Optional[str] = None,
         callback_game: Optional["types.CallbackGame"] = None,
         switch_inline_query_chosen_chat: Optional["types.SwitchInlineQueryChosenChat"] = None,
-        copy_text: Optional["types.CopyTextButton"] = None,
+        copy_text: Optional[Union[str, "types.CopyTextButton"]] = None,
         pay: Optional[bool] = None,
         disabled: Optional["types.DisabledButton"] = None,
         icon_custom_emoji_id: Optional[str] = None,
@@ -257,7 +257,9 @@ class InlineKeyboardButton(Object):
         self.switch_inline_query_current_chat = switch_inline_query_current_chat
         self.callback_game = callback_game
         self.switch_inline_query_chosen_chat = switch_inline_query_chosen_chat
-        self.copy_text = copy_text
+        self.copy_text = (
+            types.CopyTextButton(text=copy_text) if isinstance(copy_text, str) else copy_text
+        )
         self.pay = pay
         self.disabled = disabled
         self.icon_custom_emoji_id = icon_custom_emoji_id

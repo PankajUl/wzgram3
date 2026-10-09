@@ -91,6 +91,7 @@ class ForwardMessages:
 
             hide_captions (``bool``, *optional*):
                 If True, the original media captions will be removed.
+                Telegram only removes captions from a forward that hides the sender, so this also hides the sender name.
 
             background (``bool``, *optional*):
                 If True, the message will be sent in background.
@@ -163,7 +164,7 @@ class ForwardMessages:
                 noforwards=protect_content,
                 video_timestamp=video_start_timestamp,
                 top_msg_id=message_thread_id,
-                drop_author=hide_sender_name if hide_sender_name is not None else None,
+                drop_author=True if hide_captions else hide_sender_name,
                 drop_media_captions=hide_captions if hide_captions is not None else None,
                 background=background if background is not None else None,
                 effect=effect,
@@ -194,11 +195,14 @@ class ForwardMessages:
         for i in r.updates:
             if isinstance(i, (raw.types.UpdateNewMessage,
                               raw.types.UpdateNewChannelMessage,
-                              raw.types.UpdateNewScheduledMessage)):
+                              raw.types.UpdateNewScheduledMessage,
+                              raw.types.UpdateBotNewBusinessMessage)):
                 forwarded_messages.append(
                     await types.Message._parse(
                         self, i.message,
-                        users, chats
+                        users, chats,
+                        business_connection_id=getattr(i, "connection_id", None),
+                        raw_reply_to_message=getattr(i, "reply_to_message", None)
                     )
                 )
 

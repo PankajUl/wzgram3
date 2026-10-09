@@ -145,9 +145,11 @@ class CreateInvoiceLink:
                     photo=raw.types.InputWebDocument(
                         url=photo_url,
                         mime_type="image/jpg",
-                        size=photo_size,
+                        size=photo_size or 0,
                         attributes=[
-                            raw.types.DocumentAttributeImageSize(w=photo_width, h=photo_height)
+                            raw.types.DocumentAttributeImageSize(
+                                w=photo_width or 0, h=photo_height or 0
+                            )
                         ],
                     ) if photo_url else None,
                     invoice=raw.types.Invoice(

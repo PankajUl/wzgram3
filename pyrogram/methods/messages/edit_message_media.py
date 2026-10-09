@@ -19,6 +19,7 @@
 import io
 import os
 import re
+from datetime import datetime
 from typing import Optional, Tuple, Union
 
 import pyrogram
@@ -302,9 +303,11 @@ class EditMessageMedia:
         chat_id: Union[int, str],
         message_id: int,
         media: "types.InputMedia",
-        reply_markup: Optional["types.InlineKeyboardMarkup"] = None,
+        reply_markup: Union["types.InlineKeyboardMarkup", type[object], None] = object,
         file_name: Optional[str] = None,
         business_connection_id: Optional[str] = None,
+        show_caption_above_media: Optional[bool] = None,
+        schedule_date: Optional[datetime] = None,
     ) -> "types.Message":
         """Edit animation, audio, document, photo or video messages.
 
@@ -327,10 +330,17 @@ class EditMessageMedia:
 
             reply_markup (:obj:`~pyrogram.types.InlineKeyboardMarkup`, *optional*):
                 An InlineKeyboardMarkup object.
+                Pass None to remove the existing reply markup.
 
             file_name (``str``, *optional*):
                 File name of the media to be sent. Not applicable to photos.
                 Defaults to file's path basename.
+
+            show_caption_above_media (``bool``, *optional*):
+                Pass True, if the caption must be shown above the message media.
+
+            schedule_date (:py:obj:`~datetime.datetime`, *optional*):
+                Date when the message will be automatically sent.
 
             business_connection_id (``str``, *optional*):
                 Unique identifier of the business connection.
@@ -362,18 +372,26 @@ class EditMessageMedia:
                 peer=await self.resolve_peer(chat_id),
                 id=message_id,
                 media=media,
-                reply_markup=await reply_markup.write(self) if reply_markup else None,
+                reply_markup=await utils.write_edit_reply_markup(self, reply_markup=reply_markup),
                 message=message,
-                entities=entities
+                entities=entities,
+                invert_media=show_caption_above_media if show_caption_above_media is not None else None,
+                schedule_date=utils.datetime_to_timestamp(schedule_date)
             ),
             sleep_threshold=60,
             business_connection_id=business_connection_id
         )
 
         for i in r.updates:
-            if isinstance(i, (raw.types.UpdateEditMessage, raw.types.UpdateEditChannelMessage, raw.types.UpdateEditEphemeralMessage)):
+            if isinstance(i, (raw.types.UpdateEditMessage, raw.types.UpdateEditChannelMessage, raw.types.UpdateEditEphemeralMessage,
+                              raw.types.UpdateNewScheduledMessage,
+                              raw.types.UpdateBotEditBusinessMessage,
+                              raw.types.UpdateBotNewBusinessMessage)):
                 return await types.Message._parse(
                     self, i.message,
                     {i.id: i for i in r.users},
-                    {i.id: i for i in r.chats}
+                    {i.id: i for i in r.chats},
+                    is_scheduled=isinstance(i, raw.types.UpdateNewScheduledMessage),
+                    business_connection_id=getattr(i, "connection_id", None),
+                    raw_reply_to_message=getattr(i, "reply_to_message", None)
                 )
